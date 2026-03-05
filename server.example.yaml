@@ -1,0 +1,25 @@
+# SimpleVPN Server Configuration
+# Copy to server.yaml and adjust values
+
+# VPN listener
+listen: ":443"
+psk: "change-me-to-a-strong-secret"
+cert: "/etc/letsencrypt/live/yourdomain.com/fullchain.pem"
+key: "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
+
+# TUN interface
+tun_ip: "10.0.0.1/24"
+tun_name: "tun0"
+mtu: 1380
+
+# Logging: debug, info, warn, error
+log_level: "info"
+
+# Management API (optional)
+api:
+  enabled: false
+  listen: ":8443"
+  bearer_token: "change-me-to-a-strong-token"
+  # Separate TLS cert for admin panel (optional, uses main cert if empty)
+  # cert: "/path/to/admin-cert.pem"
+  # key: "/path/to/admin-key.pem"

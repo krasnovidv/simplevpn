@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  vpn-server:
+    build: .
+    container_name: simplevpn
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./config:/etc/simplevpn:ro
+      - certs:/etc/letsencrypt:ro
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      - vpn
+
+  # Optional: automatic TLS certificates via certbot
+  certbot:
+    image: certbot/certbot:latest
+    container_name: simplevpn-certbot
+    volumes:
+      - certs:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    entrypoint: >
+      sh -c "certbot certonly --standalone -d $${DOMAIN}
+      --non-interactive --agree-tos --email $${EMAIL}
+      --preferred-challenges http"
+    profiles:
+      - setup
+
+volumes:
+  certs:
+  certbot-www:
+
+networks:
+  vpn:
+    driver: bridge
