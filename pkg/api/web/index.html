@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SimpleVPN Admin</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --border: #334155;
+            --text: #e2e8f0;
+            --text-muted: #94a3b8;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --warn: #f59e0b;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+        }
+        .header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 16px 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 { font-size: 18px; font-weight: 600; }
+        .header .status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+        .header .status .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+        .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px;
+        }
+        .card-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+        .card-value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+        .section { margin-bottom: 24px; }
+        .section-title { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+        th { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 500; }
+        td { font-size: 14px; }
+        .btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: none;
+            font-size: 13px;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .btn-danger { background: var(--danger); color: white; }
+        .btn-danger:hover { opacity: 0.9; }
+        .btn-primary { background: var(--accent); color: white; }
+        .btn-primary:hover { background: var(--accent-hover); }
+        .qr-modal {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            justify-content: center;
+            align-items: center;
+            z-index: 100;
+        }
+        .qr-modal.active { display: flex; }
+        .qr-modal-content {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            text-align: center;
+            max-width: 400px;
+        }
+        .qr-modal-content canvas { margin: 16px 0; }
+        .config-pre {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre;
+        }
+        .login-form {
+            max-width: 360px;
+            margin: 100px auto;
+            text-align: center;
+        }
+        .login-form input {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            color: var(--text);
+            font-size: 14px;
+            margin: 12px 0;
+        }
+        .login-form .btn { width: 100%; padding: 10px; }
+        .error { color: var(--danger); font-size: 13px; margin-top: 8px; }
+        #app { display: none; }
+    </style>
+</head>
+<body>
+    <!-- Login -->
+    <div id="login" class="login-form">
+        <h2>SimpleVPN Admin</h2>
+        <input type="password" id="token-input" placeholder="Bearer Token" autofocus>
+        <button class="btn btn-primary" onclick="doLogin()">Login</button>
+        <div id="login-error" class="error"></div>
+    </div>
+
+    <!-- App -->
+    <div id="app">
+        <div class="header">
+            <h1>SimpleVPN Admin</h1>
+            <div class="status">
+                <div class="dot" id="status-dot"></div>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </div>
+        <div class="container">
+            <!-- Stats -->
+            <div class="grid">
+                <div class="card">
+                    <div class="card-label">Status</div>
+                    <div class="card-value" id="stat-status">--</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Uptime</div>
+                    <div class="card-value" id="stat-uptime">--</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Clients</div>
+                    <div class="card-value" id="stat-clients">--</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Version</div>
+                    <div class="card-value" id="stat-version">--</div>
+                </div>
+            </div>
+
+            <!-- Clients -->
+            <div class="section">
+                <div class="section-title">Connected Clients</div>
+                <div class="card">
+                    <table>
+                        <thead>
+                            <tr><th>ID</th><th>Address</th><th>Connected</th><th>Traffic</th><th></th></tr>
+                        </thead>
+                        <tbody id="clients-table">
+                            <tr><td colspan="5" style="color:var(--text-muted)">No clients connected</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Config -->
+            <div class="section">
+                <div class="section-title">Server Configuration</div>
+                <div class="card">
+                    <pre class="config-pre" id="config-view">Loading...</pre>
+                </div>
+            </div>
+
+            <!-- QR Generator -->
+            <div class="section">
+                <div class="section-title">Client Config QR Code</div>
+                <div class="card">
+                    <p style="font-size:14px;color:var(--text-muted);margin-bottom:12px">
+                        Generate a QR code for mobile app configuration.
+                    </p>
+                    <label style="font-size:13px;color:var(--text-muted)">Server address (host:port)</label>
+                    <input type="text" id="qr-server" placeholder="vpn.example.com:443"
+                        style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px;width:100%;margin:6px 0 8px">
+                    <label style="font-size:13px;color:var(--text-muted)">PSK</label>
+                    <input type="password" id="qr-psk" placeholder="Pre-shared key"
+                        style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px;width:100%;margin:6px 0 8px">
+                    <label style="font-size:13px;color:var(--text-muted)">SNI domain</label>
+                    <input type="text" id="qr-sni" placeholder="vpn.example.com"
+                        style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:14px;width:100%;margin:6px 0 12px">
+                    <button class="btn btn-primary" onclick="generateQR()">Generate QR</button>
+                    <div id="qr-output" style="margin-top:16px;text-align:center"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- QR Code library (minimal inline implementation) -->
+    <script>
+        let TOKEN = '';
+        const API_BASE = window.location.origin;
+
+        function doLogin() {
+            TOKEN = document.getElementById('token-input').value;
+            apiFetch('/api/status').then(data => {
+                document.getElementById('login').style.display = 'none';
+                document.getElementById('app').style.display = 'block';
+                refresh();
+                setInterval(refresh, 5000);
+            }).catch(err => {
+                document.getElementById('login-error').textContent = 'Invalid token';
+            });
+        }
+
+        document.getElementById('token-input').addEventListener('keydown', e => {
+            if (e.key === 'Enter') doLogin();
+        });
+
+        async function apiFetch(path, opts = {}) {
+            const res = await fetch(API_BASE + path, {
+                ...opts,
+                headers: { 'Authorization': 'Bearer ' + TOKEN, ...opts.headers }
+            });
+            if (!res.ok) throw new Error(res.status);
+            return res.json();
+        }
+
+        function formatUptime(secs) {
+            const h = Math.floor(secs / 3600);
+            const m = Math.floor((secs % 3600) / 60);
+            if (h > 0) return h + 'h ' + m + 'm';
+            return m + 'm';
+        }
+
+        function formatBytes(b) {
+            if (b < 1024) return b + ' B';
+            if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+            return (b / 1048576).toFixed(1) + ' MB';
+        }
+
+        async function refresh() {
+            try {
+                const status = await apiFetch('/api/status');
+                document.getElementById('stat-status').textContent = status.status;
+                document.getElementById('stat-uptime').textContent = formatUptime(status.uptime_secs);
+                document.getElementById('stat-clients').textContent = status.client_count;
+                document.getElementById('stat-version').textContent = status.version;
+                document.getElementById('status-text').textContent = 'Connected';
+                document.getElementById('status-dot').style.background = 'var(--success)';
+
+                const clients = await apiFetch('/api/clients');
+                const tbody = document.getElementById('clients-table');
+                if (clients.clients && clients.clients.length > 0) {
+                    tbody.innerHTML = clients.clients.map(c => `
+                        <tr>
+                            <td>${esc(c.id.substring(0,8))}</td>
+                            <td>${esc(c.remote_addr)}</td>
+                            <td>${new Date(c.connected_at).toLocaleTimeString()}</td>
+                            <td>${formatBytes(c.bytes_in)} / ${formatBytes(c.bytes_out)}</td>
+                            <td><button class="btn btn-danger" onclick="disconnectClient('${esc(c.id)}')">Disconnect</button></td>
+                        </tr>
+                    `).join('');
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted)">No clients connected</td></tr>';
+                }
+
+                const cfg = await apiFetch('/api/config');
+                document.getElementById('config-view').textContent = JSON.stringify(cfg, null, 2);
+            } catch(e) {
+                document.getElementById('status-text').textContent = 'Error';
+                document.getElementById('status-dot').style.background = 'var(--danger)';
+            }
+        }
+
+        async function disconnectClient(id) {
+            if (!confirm('Disconnect client ' + id.substring(0,8) + '?')) return;
+            try {
+                await apiFetch('/api/clients/' + id + '/disconnect', { method: 'POST' });
+                refresh();
+            } catch(e) {
+                alert('Failed to disconnect: ' + e.message);
+            }
+        }
+
+        function esc(s) {
+            const d = document.createElement('div');
+            d.textContent = s;
+            return d.innerHTML;
+        }
+
+        function generateQR() {
+            const server = document.getElementById('qr-server').value;
+            const psk = document.getElementById('qr-psk').value;
+            const sni = document.getElementById('qr-sni').value;
+
+            if (!server || !psk) {
+                alert('Server address and PSK are required');
+                return;
+            }
+
+            const config = JSON.stringify({ server: server, psk: psk, sni: sni || server.split(':')[0] });
+            const out = document.getElementById('qr-output');
+
+            // Simple text-based QR display (real QR requires a library)
+            out.innerHTML = `
+                <p style="font-size:13px;color:var(--text-muted);margin-bottom:8px">Config JSON (scan with app):</p>
+                <pre class="config-pre" style="text-align:left;font-size:12px">${esc(config)}</pre>
+                <p style="font-size:12px;color:var(--text-muted);margin-top:8px">
+                    To generate a scannable QR code, use:<br>
+                    <code>echo '${esc(config)}' | qrencode -o config.png</code>
+                </p>
+            `;
+        }
+    </script>
+</body>
+</html>
