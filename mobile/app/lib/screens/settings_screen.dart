@@ -1,0 +1,171 @@
+import 'package:flutter/material.dart';
+import '../services/config_storage.dart';
+import '../models/vpn_config.dart';
+import 'qr_scanner_screen.dart';
+
+class SettingsScreen extends StatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  final _storage = ConfigStorage();
+  final _serverCtrl = TextEditingController();
+  final _pskCtrl = TextEditingController();
+  final _sniCtrl = TextEditingController();
+  bool _autoReconnect = false;
+  bool _killSwitch = false;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final config = await _storage.loadConfig();
+    _autoReconnect = await _storage.getAutoReconnect();
+    _killSwitch = await _storage.getKillSwitch();
+
+    if (config != null) {
+      _serverCtrl.text = config.server;
+      _pskCtrl.text = config.psk;
+      _sniCtrl.text = config.sni;
+    }
+
+    setState(() => _loaded = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Settings')),
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Settings'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.qr_code_scanner),
+            tooltip: 'Scan QR Config',
+            onPressed: _scanQr,
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          // Server config section
+          Text('Server Configuration',
+              style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _serverCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Server (host:port)',
+              hintText: 'vpn.example.com:443',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _pskCtrl,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Pre-Shared Key',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _sniCtrl,
+            decoration: const InputDecoration(
+              labelText: 'SNI Domain (optional)',
+              hintText: 'vpn.example.com',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          FilledButton(
+            onPressed: _save,
+            child: const Text('Save Configuration'),
+          ),
+
+          const Divider(height: 40),
+
+          // Connection settings
+          Text('Connection', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+
+          SwitchListTile(
+            title: const Text('Auto-Reconnect'),
+            subtitle:
+                const Text('Automatically reconnect on network changes'),
+            value: _autoReconnect,
+            onChanged: (v) async {
+              await _storage.setAutoReconnect(v);
+              setState(() => _autoReconnect = v);
+            },
+          ),
+
+          SwitchListTile(
+            title: const Text('Kill Switch'),
+            subtitle:
+                const Text('Block all traffic when VPN disconnects'),
+            value: _killSwitch,
+            onChanged: (v) async {
+              await _storage.setKillSwitch(v);
+              setState(() => _killSwitch = v);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _save() async {
+    final config = VpnConfig(
+      server: _serverCtrl.text,
+      psk: _pskCtrl.text,
+      sni: _sniCtrl.text,
+    );
+    await _storage.saveConfig(config);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Configuration saved')),
+      );
+    }
+  }
+
+  Future<void> _scanQr() async {
+    final config = await Navigator.of(context).push<VpnConfig>(
+      MaterialPageRoute(builder: (_) => const QrScannerScreen()),
+    );
+    if (config != null) {
+      _serverCtrl.text = config.server;
+      _pskCtrl.text = config.psk;
+      _sniCtrl.text = config.sni;
+      await _save();
+    }
+  }
+
+  @override
+  void dispose() {
+    _serverCtrl.dispose();
+    _pskCtrl.dispose();
+    _sniCtrl.dispose();
+    super.dispose();
+  }
+}
