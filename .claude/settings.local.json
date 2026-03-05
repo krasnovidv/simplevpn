@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(go mod:*)",
+      "Bash(curl:*)",
+      "Read(//tmp/**)",
+      "Bash(cygpath -w /tmp/go-installer.msi)",
+      "Bash(cmd:*)",
+      "Read(//c/Program Files/Go/bin/**)",
+      "Bash(\"/c/Program Files/Go/bin/go.exe\" version)",
+      "Bash(~/go-sdk/go/bin/go.exe version:*)",
+      "Bash(export:*)"
+    ]
+  }
+}
