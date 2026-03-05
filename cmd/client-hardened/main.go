@@ -1,26 +1,24 @@
-// Hardened VPN Client — устойчивый к DPI
+// Hardened VPN Client — DPI-resistant
 //
-// # Запуск
+// # Usage
 //
 //	sudo ./client-hardened \
 //	  -server yourdomain.com:443 \
-//	  -psk "мой-супер-секрет" \
+//	  -psk "my-secret" \
 //	  -tun-ip 10.0.0.2/24 \
-//	  -sni yourdomain.com        # SNI в TLS handshake (домен сервера)
+//	  -sni yourdomain.com
 //
-// # Что происходит при подключении
+// # Connection Flow
 //
-//  1. TCP соединение к серверу на порт 443
-//  2. TLS 1.3 handshake — выглядит как обычный HTTPS
-//  3. Клиент отправляет HMAC-аутентификационный токен (56 байт)
-//  4. Сервер проверяет токен, отвечает "OK"
-//  5. Туннель активен: IP-пакеты -> шифрование -> обфускация -> TLS -> сервер
+//  1. TCP connection to server on port 443
+//  2. TLS 1.3 handshake — looks like regular HTTPS
+//  3. Client sends HMAC authentication token (56 bytes)
+//  4. Server verifies token, replies "OK"
+//  5. Tunnel active: IP packets -> encrypt -> obfuscate -> TLS -> server
 package main
 
 import (
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
@@ -32,22 +30,20 @@ import (
 	"syscall"
 	"time"
 
-	"simplevpn/pkg/crypto"
 	"simplevpn/pkg/obfs"
 	"simplevpn/pkg/tlsdecoy"
+	"simplevpn/pkg/tunnel"
 )
-
-const maxFrameSize = 65535
 
 func main() {
 	serverAddr := flag.String("server", "", "Server address host:port (required)")
-	psk        := flag.String("psk", "", "Pre-shared key (required)")
-	sni        := flag.String("sni", "", "SNI for TLS handshake (optional)")
-	tunIP      := flag.String("tun-ip", "10.0.0.2/24", "Client TUN IP (CIDR)")
-	tunName    := flag.String("tun-name", "tun0", "TUN interface name")
-	mtu        := flag.Int("mtu", 1380, "TUN MTU")
-	routeAll   := flag.Bool("route-all", false, "Route all traffic through VPN")
-	jitterMs   := flag.Int("jitter", 5, "Max timing jitter in milliseconds")
+	psk := flag.String("psk", "", "Pre-shared key (required)")
+	sni := flag.String("sni", "", "SNI for TLS handshake (optional)")
+	tunIP := flag.String("tun-ip", "10.0.0.2/24", "Client TUN IP (CIDR)")
+	tunName := flag.String("tun-name", "tun0", "TUN interface name")
+	mtu := flag.Int("mtu", 1380, "TUN MTU")
+	routeAll := flag.Bool("route-all", false, "Route all traffic through VPN")
+	jitterMs := flag.Int("jitter", 5, "Max timing jitter in milliseconds")
 	skipVerify := flag.Bool("skip-verify", false, "Skip TLS certificate verification (testing only!)")
 	flag.Parse()
 
@@ -58,28 +54,22 @@ func main() {
 		log.Fatal("Specify -psk")
 	}
 
-	// ── Derive keys (identical to server!) ───────────────────────────────────
-	masterKey := sha256.Sum256([]byte(*psk))
-	encKey    := sha256.Sum256(append(masterKey[:], []byte("encryption")...))
-	obfsKey   := obfs.DeriveObfsKey(sha256.Sum256(append(masterKey[:], []byte("obfuscation")...)))
-
-	ciph, err := crypto.NewCipherFromKey(encKey)
+	// -- Derive keys from PSK --
+	keys, err := tunnel.DeriveKeys(*psk)
 	if err != nil {
-		log.Fatalf("Init cipher: %v", err)
+		log.Fatalf("Init crypto: %v", err)
 	}
-	obfuscator := obfs.New(obfsKey)
-
 	log.Println("Crypto initialized")
 
-	// ── TUN ─────────────────────────────────────────────────────────────────
-	tun, err := createTUN(*tunName, *tunIP, *mtu)
+	// -- TUN --
+	tun, err := tunnel.CreateTUN(*tunName, *tunIP, *mtu)
 	if err != nil {
 		log.Fatalf("Create TUN: %v", err)
 	}
 	defer tun.Close()
 	log.Printf("TUN %s: %s", *tunName, *tunIP)
 
-	// ── TLS connection ────────────────────────────────────────────────────────
+	// -- TLS connection --
 	host := *sni
 	if host == "" {
 		h, _, err := net.SplitHostPort(*serverAddr)
@@ -111,8 +101,8 @@ func main() {
 
 	defer tlsConn.Close()
 
-	// ── Authentication ────────────────────────────────────────────────────────
-	_, authToken, err := tlsdecoy.GenerateAuthToken(masterKey)
+	// -- Authentication --
+	_, authToken, err := tlsdecoy.GenerateAuthToken(keys.Master)
 	if err != nil {
 		log.Fatalf("Generate auth token: %v", err)
 	}
@@ -133,14 +123,14 @@ func main() {
 	}
 	log.Println("Authentication OK")
 
-	// ── Routing ─────────────────────────────────────────────────────────────
+	// -- Routing --
 	if *routeAll {
 		setupRouteAll(*serverAddr, *tunName)
 	}
 
 	log.Printf("Tunnel active: %s <-> %s", *tunIP, *serverAddr)
 
-	// ── Graceful shutdown ─────────────────────────────────────────────────────
+	// -- Graceful shutdown --
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
@@ -150,12 +140,12 @@ func main() {
 		os.Exit(0)
 	}()
 
-	// ── TUN -> TLS (send to server) ─────────────────────────────────────────
-	go func() {
-		buf := make([]byte, maxFrameSize)
-		encBuf := make([]byte, 0, maxFrameSize+crypto.Overhead)
-		obfsBuf := make([]byte, 0, maxFrameSize+crypto.Overhead+obfs.HeaderSize+obfs.MaxPad)
+	// Create tunnel
+	tun2 := tunnel.New(keys, tlsConn)
 
+	// -- TUN -> TLS (send to server) --
+	go func() {
+		buf := make([]byte, tunnel.MaxFrameSize)
 		for {
 			n, err := tun.Read(buf)
 			if err != nil {
@@ -170,60 +160,19 @@ func main() {
 				}
 			}
 
-			encrypted, err := ciph.Encrypt(encBuf[:0], buf[:n])
-			if err != nil {
-				log.Printf("Encrypt: %v", err)
-				continue
-			}
-
-			obfuscated, err := obfuscator.Wrap(obfsBuf[:0], encrypted)
-			if err != nil {
-				log.Printf("Obfs wrap: %v", err)
-				continue
-			}
-
-			frame := make([]byte, 4+len(obfuscated))
-			binary.BigEndian.PutUint32(frame[:4], uint32(len(obfuscated)))
-			copy(frame[4:], obfuscated)
-
-			if _, err := tlsConn.Write(frame); err != nil {
-				log.Printf("TLS write: %v", err)
+			if err := tun2.Send(buf[:n]); err != nil {
+				log.Printf("Send: %v", err)
 				return
 			}
 		}
 	}()
 
-	// ── TLS -> TUN (receive from server) ──────────────────────────────────
-	lenBuf := make([]byte, 4)
-	frameBuf := make([]byte, maxFrameSize+obfs.HeaderSize+obfs.MaxPad)
-	decBuf := make([]byte, 0, maxFrameSize)
-
+	// -- TLS -> TUN (receive from server) --
 	for {
-		if _, err := io.ReadFull(tlsConn, lenBuf); err != nil {
-			log.Printf("Read frame length: %v", err)
-			return
-		}
-		frameLen := binary.BigEndian.Uint32(lenBuf)
-		if frameLen > uint32(len(frameBuf)) {
-			log.Printf("Frame too large: %d", frameLen)
-			return
-		}
-
-		if _, err := io.ReadFull(tlsConn, frameBuf[:frameLen]); err != nil {
-			log.Printf("Read frame body: %v", err)
-			return
-		}
-
-		encrypted, err := obfuscator.Unwrap(frameBuf[:frameLen])
+		plaintext, err := tun2.Recv()
 		if err != nil {
-			log.Printf("Obfs unwrap: %v", err)
-			continue
-		}
-
-		plaintext, err := ciph.Decrypt(decBuf[:0], encrypted)
-		if err != nil {
-			log.Printf("Decrypt: %v", err)
-			continue
+			log.Printf("Recv: %v", err)
+			return
 		}
 
 		if _, err := tun.Write(plaintext); err != nil {
@@ -254,37 +203,6 @@ func defaultGateway() string {
 	var gw string
 	fmt.Sscanf(string(out), "default via %s", &gw)
 	return gw
-}
-
-// ── TUN helpers ──────────────────────────────────────────────────────────────
-
-type tunDevice struct {
-	f    *os.File
-	name string
-}
-
-func (t *tunDevice) Read(b []byte) (int, error)  { return t.f.Read(b) }
-func (t *tunDevice) Write(b []byte) (int, error) { return t.f.Write(b) }
-func (t *tunDevice) Close() error                { return t.f.Close() }
-
-func createTUN(name, cidr string, mtu int) (*tunDevice, error) {
-	f, err := openTun(name)
-	if err != nil {
-		return nil, err
-	}
-	if err := runCmd("ip", "addr", "add", cidr, "dev", name); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("ip addr add: %w", err)
-	}
-	if err := runCmd("ip", "link", "set", "dev", name, "mtu", fmt.Sprint(mtu)); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("ip link mtu: %w", err)
-	}
-	if err := runCmd("ip", "link", "set", "dev", name, "up"); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("ip link up: %w", err)
-	}
-	return &tunDevice{f: f, name: name}, nil
 }
 
 func runCmd(name string, args ...string) error {
