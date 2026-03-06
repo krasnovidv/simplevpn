@@ -32,6 +32,8 @@ sudo ./simplevpn-server-hardened \
 | `-server` | — | Адрес сервера host:port (обязательно) |
 | `-psk` | — | Pre-shared key (обязательно, должен совпадать с сервером) |
 | `-sni` | (из `-server`) | SNI для TLS handshake (домен сервера) |
+| `-transport` | `tls` | Транспорт: `tls` (raw TLS) или `ws` (WebSocket, anti-DPI) |
+| `-fingerprint` | `none` | Профиль TLS отпечатка: `none`, `chrome`, `firefox`, `safari` |
 | `-tun-ip` | `10.0.0.2/24` | IP-адрес TUN-интерфейса клиента (CIDR) |
 | `-tun-name` | `tun0` | Имя TUN-интерфейса |
 | `-mtu` | `1380` | MTU TUN-интерфейса |
@@ -58,6 +60,17 @@ sudo ./simplevpn-client-hardened \
   -route-all
 ```
 
+### Пример — WebSocket + Chrome fingerprint (anti-DPI)
+
+```bash
+sudo ./simplevpn-client-hardened \
+  -server example.com:443 \
+  -psk "my-strong-secret-key" \
+  -transport ws \
+  -fingerprint chrome \
+  -tun-ip 10.0.0.2/24
+```
+
 ### Пример — тестовое подключение (самоподписанный сертификат)
 
 ```bash
@@ -67,6 +80,31 @@ sudo ./simplevpn-client-hardened \
   -tun-ip 10.0.0.2/24 \
   -skip-verify
 ```
+
+## Мобильная конфигурация (QR JSON)
+
+QR-код для мобильного приложения содержит JSON:
+
+```json
+{
+  "server": "example.com:443",
+  "psk": "my-strong-secret-key",
+  "sni": "example.com",
+  "transport": "ws",
+  "fingerprint": "chrome"
+}
+```
+
+| Поле | Default | Описание |
+|------|---------|----------|
+| `server` | — | Адрес сервера host:port (обязательно) |
+| `psk` | — | Pre-shared key (обязательно) |
+| `sni` | из server | SNI для TLS |
+| `transport` | `ws` | Транспорт: `ws` или `tls` |
+| `fingerprint` | `chrome` (Android), `safari` (iOS) | Профиль TLS отпечатка |
+| `skip_verify` | `false` | Пропуск верификации сертификата |
+
+Старые QR-коды без полей `transport`/`fingerprint` используют значения по умолчанию (WebSocket + Chrome).
 
 ## MTU
 

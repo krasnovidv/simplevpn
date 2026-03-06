@@ -13,6 +13,9 @@
 | Size fingerprinting | Random padding 0-255 байт на пакет |
 | Timing fingerprinting | Random jitter 0-N мс на пакет (клиент) |
 | Transport | TLS 1.3, ALPN h2+http/1.1 |
+| WebSocket transport | VPN данные в WS binary frames — неотличимо от чата/игры |
+| TLS fingerprint mimicry | uTLS: Chrome/Firefox/Safari ClientHello (JA3/JA4 match) |
+| Multi-port | Сервер на нескольких портах — устойчив к блокировке порта |
 | Active probe resistance | HTML decoy (nginx/1.24.0), auth-gating |
 
 ## Протокол аутентификации
@@ -62,7 +65,10 @@ Sliding window с 1024 слотами. Каждый пакет имеет мон
 ### От чего защищает
 
 - **Пассивный DPI** — трафик выглядит как HTTPS (TLS 1.3 на порту 443)
+- **JA3/JA4 fingerprinting** — uTLS мимикрирует отпечаток реального браузера
+- **Анализ трафика внутри TLS** — WebSocket framing делает трафик похожим на обычное веб-приложение
 - **Статистический анализ** — entropy masking + random padding ломают паттерны
+- **Блокировка по порту** — multi-port listening, переключение на другой порт
 - **Active probing** — сканеры видят HTML-страницу nginx
 - **Replay-атаки** — sliding window + timestamp validation
 - **Перехват без PSK** — AES-256-GCM шифрование

@@ -15,6 +15,11 @@ simplevpn/
 │       └── tun_linux.go        # Создание TUN через ioctl
 ├── pkg/
 │   ├── tunnel/                 # Общий VPN-протокол (TUN, framing, ключи, крипто)
+│   ├── transport/              # Абстракция транспортного уровня (pluggable transports)
+│   │   ├── transport.go        # Интерфейсы Dialer/Listener, реестр, auto-detect
+│   │   ├── rawtls/             # Raw TLS 1.3 транспорт (backward compatible)
+│   │   ├── ws/                 # WebSocket over TLS (anti-DPI, RFC 6455)
+│   │   └── utlsdial/           # uTLS fingerprint mimicry (Chrome/Firefox/Safari)
 │   ├── crypto/                 # AES-256-GCM шифрование
 │   ├── obfs/                   # ChaCha20 entropy masking + padding
 │   ├── replay/                 # Sliding window replay protection
@@ -79,7 +84,9 @@ simplevpn/
 │      └── Socket protection             │
 ├────────────────────────────────────────┤
 │  Go (gomobile AAR)                     │
-│  └── vpnlib — TLS, auth, tunnel       │
+│  └── vpnlib — transport, auth, tunnel │
+│      ├── WebSocket + uTLS (default)   │
+│      └── Raw TLS (legacy fallback)    │
 └────────────────────────────────────────┘
 ```
 
@@ -92,10 +99,65 @@ Flutter общается с Kotlin через `MethodChannel`, Kotlin управ
 - IP-режим — самоподписанный сертификат для быстрого старта
 - Domain-режим — Let's Encrypt для продакшна
 
+## Транспортный уровень (Anti-DPI)
+
+Транспортный уровень находится между TCP и VPN-протоколом. Он обеспечивает множество
+способов доставки VPN-трафика, делая его неотличимым от обычного веб-трафика.
+
+### WebSocket транспорт (по умолчанию для мобильных)
+
+```
+Мобильное приложение                           Сервер
+    |                                           |
+    |  [uTLS ClientHello: Chrome fingerprint]   |
+    |  ------TCP:443 TLS 1.3 Handshake-------> |
+    |                                           |
+    |  GET /ws HTTP/1.1                         |
+    |  Upgrade: websocket                       |
+    |  ---------------------------------------->|
+    |                                           |  (auto-detect: WS upgrade)
+    |  <--- 101 Switching Protocols ----------- |
+    |                                           |
+    |  [WS Binary Frame: auth token (56B)]      |
+    |  ---------------------------------------->|  (verify HMAC)
+    |  <--- [WS Binary Frame: "OK"] ----------- |
+    |                                           |
+    |  [WS Binary: obfs(encrypt(IP packet))]    |
+    |  <======================================> |  (tunnel active)
+```
+
+**Преимущества:**
+- HTTP Upgrade выглядит как обычное WebSocket-приложение (чат, игра)
+- uTLS мимикрирует JA3/JA4 отпечаток настоящего браузера
+- Совместим с CDN и reverse-proxy
+- Один порт для всех транспортов (auto-detect на сервере)
+
+### Raw TLS транспорт (legacy, backward compatible)
+
+Прямое TLS 1.3 соединение без WebSocket — оригинальный протокол.
+Старые клиенты продолжают работать без изменений.
+
+### uTLS Fingerprint Mimicry
+
+Заменяет Go TLS на uTLS (refraction-networking/utls) на клиенте:
+- **Chrome** — по умолчанию на Android
+- **Safari** — по умолчанию на iOS
+- **Firefox** — альтернативный профиль
+
+JA3 отпечаток полностью соответствует реальному браузеру.
+
+### Multi-port Listening
+
+Сервер может слушать на нескольких портах одновременно (443, 80, 8080).
+Если оператор блокирует один порт — другой продолжает работать.
+
 ## Уровни защиты
 
 ```
 ┌─────────────────────────────────────────────────────┐
+│  WebSocket + uTLS на порту 443                       │
+│  → DPI видит обычный WebSocket (чат/игра)            │
+├─────────────────────────────────────────────────────┤
 │  TLS 1.3 на порту 443                                │
 │  → DPI видит обычный HTTPS, не VPN                   │
 ├─────────────────────────────────────────────────────┤
@@ -176,6 +238,10 @@ authKey     = masterKey                              → HMAC-SHA256
 | Пакет | Назначение |
 |-------|------------|
 | `pkg/tunnel` | TUN-интерфейс, framing, derive ключей, общий туннельный протокол |
+| `pkg/transport` | Абстракция транспорта: интерфейсы, реестр, auto-detect WS/TLS |
+| `pkg/transport/rawtls` | Raw TLS 1.3 транспорт (legacy) |
+| `pkg/transport/ws` | WebSocket транспорт (anti-DPI, RFC 6455 binary frames) |
+| `pkg/transport/utlsdial` | uTLS диалер с мимикрией браузера (Chrome/Firefox/Safari) |
 | `pkg/crypto` | AES-256-GCM: Encrypt/Decrypt с random nonce (12 байт) |
 | `pkg/obfs` | ChaCha20 XOR masking, random padding, timing jitter, entropy scoring |
 | `pkg/replay` | Sliding window (1024 слота) для защиты от replay-атак |
