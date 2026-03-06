@@ -9,7 +9,7 @@
 
 MODULE := simplevpn/mobile/vpnlib
 
-.PHONY: all android ios clean
+.PHONY: all android ios clean install-android
 
 all: android ios
 
@@ -20,6 +20,12 @@ android:
 		-o build/vpnlib.aar \
 		$(MODULE)
 	@echo "Output: build/vpnlib.aar"
+
+# Build and install AAR into Flutter app
+install-android: android
+	@echo "=== Installing AAR into Flutter app ==="
+	cp build/vpnlib.aar app/android/app/libs/vpnlib.aar
+	@echo "Installed: app/android/app/libs/vpnlib.aar"
 
 # Build iOS .xcframework
 ios:

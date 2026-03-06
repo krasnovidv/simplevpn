@@ -3,16 +3,15 @@ package com.simplevpn.app
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import vpnlib.Vpnlib
 
 class SimpleVpnService : VpnService() {
 
@@ -25,30 +24,36 @@ class SimpleVpnService : VpnService() {
         private var vpnInterface: ParcelFileDescriptor? = null
         private var configJson: String? = null
         private var autoReconnect: Boolean = false
+        private var connectThread: Thread? = null
     }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "Service onCreate")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand action=${intent?.action}")
+
         when (intent?.action) {
             "DISCONNECT" -> {
                 disconnect()
                 return START_NOT_STICKY
             }
             "ENABLE_KILL_SWITCH" -> {
-                // Kill switch is achieved via the VPN builder's setBlocking method
-                // and by keeping the service always running
                 return START_STICKY
             }
         }
 
-        configJson = intent?.getStringExtra("config") ?: return START_NOT_STICKY
+        configJson = intent?.getStringExtra("config") ?: run {
+            Log.w(TAG, "No config in intent, stopping")
+            return START_NOT_STICKY
+        }
         autoReconnect = intent.getBooleanExtra("auto_reconnect", false)
+        Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect")
 
         connect(configJson!!)
         return START_STICKY
@@ -61,8 +66,9 @@ class SimpleVpnService : VpnService() {
         try {
             // Start as foreground service (required for Android 8+)
             startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+            Log.d(TAG, "Foreground service started")
 
-            // Create TUN interface with kill switch support
+            // Create TUN interface
             val builder = Builder()
                 .setSession("SimpleVPN")
                 .addAddress("10.0.0.2", 24)
@@ -70,31 +76,50 @@ class SimpleVpnService : VpnService() {
                 .addDnsServer("1.1.1.1")
                 .addDnsServer("8.8.8.8")
                 .setMtu(1380)
-                .setBlocking(true) // Kill switch: block traffic if VPN drops
+                .setBlocking(true)
 
-            // Android 10+: always-on VPN support
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 builder.setMetered(false)
             }
 
             vpnInterface = builder.establish()
-            val fd = vpnInterface?.fd ?: throw Exception("Failed to create TUN")
+            val fd = vpnInterface?.fd ?: throw Exception("Failed to create TUN interface")
 
             Log.i(TAG, "TUN interface created, fd=$fd")
 
-            // Call Go library via gomobile binding
-            // vpnlib.Vpnlib.connect(config, fd.toLong())
+            // Vpnlib.connect() is blocking — run on a background thread
+            connectThread = Thread({
+                try {
+                    Log.d(TAG, "Calling Vpnlib.connect() on background thread")
+                    Vpnlib.connect(config, fd.toLong())
+                    // connect() returns when tunnel closes normally
+                    Log.i(TAG, "Vpnlib.connect() returned normally")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Vpnlib.connect() error: ${e.message}", e)
+                    currentStatus = "error: ${e.message}"
+                } finally {
+                    Log.d(TAG, "Connect thread finished, cleaning up")
+                    vpnInterface?.close()
+                    vpnInterface = null
+                    if (currentStatus != "disconnected") {
+                        currentStatus = "disconnected"
+                    }
+                    updateNotification("Disconnected")
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }, "vpnlib-connect")
+            connectThread!!.start()
 
             currentStatus = "connected"
-            Log.i(TAG, "VPN connected")
+            Log.i(TAG, "VPN tunnel thread started")
             updateNotification("Connected")
 
-            // Setup auto-reconnect via network monitoring
             if (autoReconnect) {
                 setupNetworkMonitoring()
             }
         } catch (e: Exception) {
-            Log.e(TAG, "VPN connect failed: ${e.message}")
+            Log.e(TAG, "VPN connect failed: ${e.message}", e)
             currentStatus = "error: ${e.message}"
             disconnect()
         }
@@ -105,10 +130,18 @@ class SimpleVpnService : VpnService() {
 
         removeNetworkMonitoring()
 
-        // vpnlib.Vpnlib.disconnect()
+        try {
+            Log.d(TAG, "Calling Vpnlib.disconnect()")
+            Vpnlib.disconnect()
+        } catch (e: Exception) {
+            Log.e(TAG, "Vpnlib.disconnect() error: ${e.message}", e)
+        }
+
         vpnInterface?.close()
         vpnInterface = null
+        connectThread = null
         currentStatus = "disconnected"
+        Log.d(TAG, "VPN disconnected, status=disconnected")
 
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

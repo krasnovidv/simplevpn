@@ -33,9 +33,10 @@ import (
 
 // Config is the JSON configuration passed from the mobile app.
 type Config struct {
-	Server string `json:"server"` // host:port
-	PSK    string `json:"psk"`
-	SNI    string `json:"sni"`
+	Server     string `json:"server"` // host:port
+	PSK        string `json:"psk"`
+	SNI        string `json:"sni"`
+	SkipVerify bool   `json:"skip_verify,omitempty"`
 }
 
 // state holds the current connection state.
@@ -102,13 +103,14 @@ func Connect(configJSON string, fd int) error {
 	}
 
 	// TLS connection
-	log.Printf("[vpnlib] Connecting to %s (SNI: %s)", cfg.Server, sni)
+	log.Printf("[vpnlib] Connecting to %s (SNI: %s, skipVerify: %v)", cfg.Server, sni, cfg.SkipVerify)
 	setStatus("connecting")
 
 	tlsCfg := &tls.Config{
-		ServerName: sni,
-		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{"h2", "http/1.1"},
+		ServerName:         sni,
+		MinVersion:         tls.VersionTLS13,
+		NextProtos:         []string{"h2", "http/1.1"},
+		InsecureSkipVerify: cfg.SkipVerify,
 	}
 
 	rawConn, err := net.DialTimeout("tcp", cfg.Server, 10*time.Second)

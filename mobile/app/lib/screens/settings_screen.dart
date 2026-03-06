@@ -15,6 +15,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _serverCtrl = TextEditingController();
   final _pskCtrl = TextEditingController();
   final _sniCtrl = TextEditingController();
+  bool _skipVerify = false;
   bool _autoReconnect = false;
   bool _killSwitch = false;
   bool _loaded = false;
@@ -34,6 +35,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _serverCtrl.text = config.server;
       _pskCtrl.text = config.psk;
       _sniCtrl.text = config.sni;
+      _skipVerify = config.skipVerify;
     }
 
     setState(() => _loaded = true);
@@ -95,7 +97,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
               border: OutlineInputBorder(),
             ),
           ),
-          const SizedBox(height: 24),
+          const SizedBox(height: 12),
+
+          SwitchListTile(
+            title: const Text('Skip TLS Verification'),
+            subtitle: const Text('For self-signed certificates (test servers)'),
+            value: _skipVerify,
+            onChanged: (v) => setState(() => _skipVerify = v),
+            contentPadding: EdgeInsets.zero,
+          ),
+
+          const SizedBox(height: 16),
 
           FilledButton(
             onPressed: _save,
@@ -139,6 +151,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       server: _serverCtrl.text,
       psk: _pskCtrl.text,
       sni: _sniCtrl.text,
+      skipVerify: _skipVerify,
     );
     await _storage.saveConfig(config);
 
@@ -157,6 +170,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _serverCtrl.text = config.server;
       _pskCtrl.text = config.psk;
       _sniCtrl.text = config.sni;
+      _skipVerify = config.skipVerify;
       await _save();
     }
   }
