@@ -1,4 +1,4 @@
-[Назад к README](../README.md) · [Архитектура ->](architecture.md)
+[Назад к README](../README.md) · [Архитектура →](architecture.md)
 
 # Начало работы
 
@@ -120,3 +120,4 @@ make bench   # бенчмарки (Wrap/Unwrap, Check)
 
 - [Конфигурация](configuration.md) — полный список флагов сервера и клиента
 - [Архитектура](architecture.md) — как устроен проект внутри
+- [Мобильное приложение](mobile-build.md) — сборка Android-клиента

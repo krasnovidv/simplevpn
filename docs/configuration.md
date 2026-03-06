@@ -1,4 +1,4 @@
-[<- Архитектура](architecture.md) · [Назад к README](../README.md) · [Безопасность ->](security.md)
+[← Архитектура](architecture.md) · [Назад к README](../README.md) · [Безопасность →](security.md)
 
 # Конфигурация
 
