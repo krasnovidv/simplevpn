@@ -27,6 +27,7 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _vpnService.addListener(_onStatusChanged);
     _loadConfig();
+    _vpnService.checkInitialStatus();
     _log.info('App started');
   }
 

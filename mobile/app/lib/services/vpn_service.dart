@@ -21,6 +21,21 @@ class VpnService {
     _channel.setMethodCallHandler(_handlePlatformCall);
   }
 
+  /// Check native VPN status on startup to sync UI with already-running tunnel.
+  Future<void> checkInitialStatus() async {
+    try {
+      final statusStr = await getStatus();
+      final nativeStatus = _parseStatus(statusStr);
+      _log.debug('Initial status check: native="$statusStr" -> $nativeStatus');
+      if (nativeStatus != VpnStatus.disconnected) {
+        _setStatus(nativeStatus);
+        _startPolling();
+      }
+    } catch (e) {
+      _log.debug('Initial status check failed: $e');
+    }
+  }
+
   void addListener(void Function(VpnStatus) listener) {
     _listeners.add(listener);
   }
