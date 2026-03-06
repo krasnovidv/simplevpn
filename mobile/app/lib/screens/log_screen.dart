@@ -58,9 +58,11 @@ class _LogScreenState extends State<LogScreen> {
                       fontSize: 12,
                       color: log.level == 'ERROR'
                           ? colorScheme.error
-                          : log.level == 'DEBUG'
-                              ? colorScheme.onSurface.withValues(alpha: 0.5)
-                              : colorScheme.onSurface.withValues(alpha: 0.8),
+                          : log.level == 'NATIVE'
+                              ? Colors.cyan
+                              : log.level == 'DEBUG'
+                                  ? colorScheme.onSurface.withValues(alpha: 0.5)
+                                  : colorScheme.onSurface.withValues(alpha: 0.8),
                     ),
                   ),
                 );

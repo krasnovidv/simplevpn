@@ -223,19 +223,25 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _toggleConnection() {
     if (_status == VpnStatus.connected) {
+      _log.info('User pressed Disconnect');
       setState(() => _actionInProgress = true);
       _vpnService.disconnect();
     } else if (_config != null) {
+      _log.info('User pressed Connect');
+      _log.debug('Config: server=${_config!.server}, sni=${_config!.sni}, skipVerify=${_config!.skipVerify}');
       final validationError = _validateConfig(_config!);
       if (validationError != null) {
-        _log.error('Config invalid: $validationError');
+        _log.error('Config validation failed: $validationError');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(validationError)),
         );
         return;
       }
+      _log.debug('Config validated OK, starting connection');
       setState(() => _actionInProgress = true);
       _vpnService.connect(_config!.toJson());
+    } else {
+      _log.error('Connect pressed but no config loaded');
     }
   }
 

@@ -44,10 +44,25 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             }
             "status" -> {
                 // Prefer Go-side status (authoritative), fall back to Kotlin-side
-                val goStatus = try { Vpnlib.status() } catch (_: Exception) { null }
+                val goStatus = try { Vpnlib.status() } catch (e: Exception) {
+                    Log.w(TAG, "Vpnlib.status() failed: ${e.message}")
+                    null
+                }
                 val status = goStatus ?: SimpleVpnService.currentStatus
                 Log.d(TAG, "status: go=$goStatus, kotlin=${SimpleVpnService.currentStatus}, returning=$status")
                 result.success(status)
+            }
+            "getLogs" -> {
+                val logs = try {
+                    Vpnlib.logs()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Vpnlib.logs() failed: ${e.message}")
+                    ""
+                }
+                if (logs.isNotEmpty()) {
+                    Log.d(TAG, "getLogs: returning ${logs.length} chars of Go logs")
+                }
+                result.success(logs)
             }
             else -> result.notImplemented()
         }

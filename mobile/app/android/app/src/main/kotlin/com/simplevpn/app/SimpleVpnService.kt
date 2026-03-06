@@ -13,7 +13,15 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import vpnlib.Vpnlib
 
-class SimpleVpnService : VpnService() {
+class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
+
+    // Implement Go's SocketProtector interface.
+    // This protects the VPN socket from being routed through the TUN.
+    override fun protectSocket(fd: Int): Boolean {
+        val ok = protect(fd) // calls VpnService.protect(int)
+        Log.d(TAG, "protectSocket(fd=$fd) = $ok")
+        return ok
+    }
 
     companion object {
         const val TAG = "SimpleVPN"
@@ -61,7 +69,10 @@ class SimpleVpnService : VpnService() {
 
     private fun connect(config: String) {
         currentStatus = "connecting"
-        Log.i(TAG, "Starting VPN connection")
+        // Log config safely (mask PSK)
+        val configPreview = if (config.length > 100) config.take(100) + "..." else config
+        Log.i(TAG, "Starting VPN connection, config length=${config.length}")
+        Log.d(TAG, "Config preview (may contain masked data): $configPreview")
 
         try {
             // Start as foreground service (required for Android 8+)
@@ -82,10 +93,19 @@ class SimpleVpnService : VpnService() {
                 builder.setMetered(false)
             }
 
+            Log.d(TAG, "TUN builder: address=10.0.0.2/24, routes=0.0.0.0/0, dns=1.1.1.1+8.8.8.8, mtu=1380")
             vpnInterface = builder.establish()
-            val fd = vpnInterface?.fd ?: throw Exception("Failed to create TUN interface")
+            if (vpnInterface == null) {
+                Log.e(TAG, "builder.establish() returned null — VPN permission may not be granted")
+                throw Exception("Failed to create TUN interface (establish returned null)")
+            }
+            val fd = vpnInterface!!.fd
 
             Log.i(TAG, "TUN interface created, fd=$fd")
+
+            // Set socket protector so Go can protect the VPN socket from TUN routing
+            Log.d(TAG, "Setting socket protector on Vpnlib")
+            Vpnlib.setProtector(this)
 
             // Vpnlib.connect() is blocking — run on a background thread
             connectThread = Thread({
@@ -111,9 +131,10 @@ class SimpleVpnService : VpnService() {
             }, "vpnlib-connect")
             connectThread!!.start()
 
-            currentStatus = "connected"
-            Log.i(TAG, "VPN tunnel thread started")
-            updateNotification("Connected")
+            // NOTE: Do NOT set currentStatus = "connected" here!
+            // Status stays "connecting" until Go-side confirms via Vpnlib.status()
+            Log.i(TAG, "VPN tunnel thread started, status remains 'connecting' until Go confirms")
+            updateNotification("Connecting...")
 
             if (autoReconnect) {
                 setupNetworkMonitoring()

@@ -28,6 +28,7 @@ class EventLog {
   void info(String message) => add('INFO', message);
   void error(String message) => add('ERROR', message);
   void debug(String message) => add('DEBUG', message);
+  void native(String message) => add('NATIVE', message);
 
   void clear() => _entries.clear();
 }
