@@ -20,6 +20,9 @@ type ServerConfig struct {
 	CertFile string `yaml:"cert"`
 	KeyFile  string `yaml:"key"`
 
+	// Transport
+	Transport TransportConfig `yaml:"transport"`
+
 	// TUN interface
 	TunIP   string `yaml:"tun_ip"`
 	TunName string `yaml:"tun_name"`
@@ -32,6 +35,14 @@ type ServerConfig struct {
 	LogLevel string `yaml:"log_level"`
 }
 
+// TransportConfig holds transport layer settings.
+type TransportConfig struct {
+	// ExtraListens is a list of additional listen addresses (multi-port).
+	// The main Listen address is always used. These are extras.
+	// Example: [":80", ":8080"]
+	ExtraListens []string `yaml:"extra_listens"`
+}
+
 // APIConfig holds management API configuration.
 type APIConfig struct {
 	Enabled    bool   `yaml:"enabled"`
@@ -39,6 +50,18 @@ type APIConfig struct {
 	BearerToken string `yaml:"bearer_token"`
 	CertFile   string `yaml:"cert"`
 	KeyFile    string `yaml:"key"`
+}
+
+// ClientTransportConfig holds client-side transport settings.
+// These are typically passed via QR code JSON or mobile app config.
+type ClientTransportConfig struct {
+	// Type is the transport type: "tls" (raw TLS) or "ws" (WebSocket).
+	// Default: "ws" for mobile clients, "tls" for desktop.
+	Type string `json:"transport,omitempty" yaml:"transport"`
+
+	// Fingerprint is the TLS fingerprint profile: "chrome", "firefox", "safari", "none".
+	// Default: "chrome" on Android, "safari" on iOS.
+	Fingerprint string `json:"fingerprint,omitempty" yaml:"fingerprint"`
 }
 
 // Defaults returns a ServerConfig with default values.

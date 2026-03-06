@@ -9,11 +9,16 @@
 //   - Disconnect()
 //   - Status() string
 //
+// Transport support:
+//   - "ws" (default): WebSocket over TLS with uTLS fingerprint mimicry
+//   - "tls": Raw TLS 1.3 (backward compatible, legacy)
+//
 // The fd parameter is the file descriptor of the TUN device, which must be
 // created by the platform layer (NEPacketTunnelProvider on iOS, VpnService on Android).
 package vpnlib
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
@@ -22,6 +27,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -29,15 +35,20 @@ import (
 	"simplevpn/pkg/crypto"
 	"simplevpn/pkg/obfs"
 	"simplevpn/pkg/tlsdecoy"
+	"simplevpn/pkg/transport"
+	_ "simplevpn/pkg/transport/rawtls"
+	_ "simplevpn/pkg/transport/ws"
 	"simplevpn/pkg/tunnel"
 )
 
 // Config is the JSON configuration passed from the mobile app.
 type Config struct {
-	Server     string `json:"server"` // host:port
-	PSK        string `json:"psk"`
-	SNI        string `json:"sni"`
-	SkipVerify bool   `json:"skip_verify,omitempty"`
+	Server      string `json:"server"`                // host:port
+	PSK         string `json:"psk"`
+	SNI         string `json:"sni"`
+	SkipVerify  bool   `json:"skip_verify,omitempty"`
+	Transport   string `json:"transport,omitempty"`   // "ws" (default) or "tls"
+	Fingerprint string `json:"fingerprint,omitempty"` // "chrome" (default Android), "safari" (default iOS), "firefox", "none"
 }
 
 // logBuffer captures log output for retrieval by the mobile app.
@@ -118,8 +129,21 @@ type state struct {
 
 var current = &state{status: "disconnected"}
 
+// defaultTransport returns the default transport type for the current platform.
+func defaultTransport() transport.Type {
+	return transport.TypeWS
+}
+
+// defaultFingerprint returns the default TLS fingerprint for the current platform.
+func defaultFingerprint() transport.FingerprintProfile {
+	if runtime.GOOS == "ios" || runtime.GOOS == "darwin" {
+		return transport.FingerprintSafari
+	}
+	return transport.FingerprintChrome
+}
+
 // Connect establishes a VPN connection.
-//   - configJSON: JSON string with server, psk, sni fields
+//   - configJSON: JSON string with server, psk, sni, transport, fingerprint fields
 //   - fd: TUN device file descriptor (from platform VPN service)
 //
 // This function blocks until the connection is closed or Disconnect() is called.
@@ -147,7 +171,8 @@ func Connect(configJSON string, fd int) error {
 	if len(pskPreview) > 4 {
 		pskPreview = pskPreview[:4] + "..."
 	}
-	log.Printf("[vpnlib] Config: server=%s, sni=%s, skipVerify=%v, psk=%s", cfg.Server, cfg.SNI, cfg.SkipVerify, pskPreview)
+	log.Printf("[vpnlib] Config: server=%s, sni=%s, skipVerify=%v, psk=%s, transport=%s, fingerprint=%s",
+		cfg.Server, cfg.SNI, cfg.SkipVerify, pskPreview, cfg.Transport, cfg.Fingerprint)
 
 	if cfg.Server == "" || cfg.PSK == "" {
 		log.Printf("[vpnlib] ERROR: server=%q psk=%q — both are required", cfg.Server, pskPreview)
@@ -185,27 +210,54 @@ func Connect(configJSON string, fd int) error {
 		log.Printf("[vpnlib] SNI not set, derived from server: %s", sni)
 	}
 
-	// TLS connection
-	log.Printf("[vpnlib] Step 1/4: TCP dial to %s ...", cfg.Server)
-	setStatus("connecting")
-
-	tlsCfg := &tls.Config{
-		ServerName:         sni,
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{"h2", "http/1.1"},
-		InsecureSkipVerify: cfg.SkipVerify,
+	// Resolve transport settings with defaults
+	tt := transport.Type(cfg.Transport)
+	if tt == "" {
+		tt = defaultTransport()
+		log.Printf("[vpnlib] Transport not set, using default: %s", tt)
+	}
+	fp := transport.FingerprintProfile(cfg.Fingerprint)
+	if fp == "" {
+		fp = defaultFingerprint()
+		log.Printf("[vpnlib] Fingerprint not set, using default: %s", fp)
 	}
 
-	// Use a custom dialer that protects the socket from VPN routing
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-		Control: func(network, address string, c syscall.RawConn) error {
-			if protector == nil {
-				log.Printf("[vpnlib] WARNING: no socket protector set, VPN routing loop may occur")
+	// Create transport dialer
+	log.Printf("[vpnlib] Step 1/4: Creating transport (type=%s, fingerprint=%s) ...", tt, fp)
+	setStatus("connecting")
+
+	dialer, err := transport.NewDialer(tt, fp)
+	if err != nil {
+		log.Printf("[vpnlib] ERROR: create transport dialer: %v", err)
+		setStatus("error: transport: " + err.Error())
+		return fmt.Errorf("create transport: %w", err)
+	}
+
+	// Build dial config
+	dialCfg := &transport.DialConfig{
+		ServerAddr:  cfg.Server,
+		SNI:         sni,
+		Fingerprint: fp,
+	}
+	if cfg.SkipVerify {
+		dialCfg.TLSConfig = &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS12,
+			NextProtos:         []string{"http/1.1"},
+		}
+	}
+
+	// Socket protection for Android VPN
+	if protector != nil {
+		dialCfg.DialControl = func(network, address string, c interface{}) error {
+			rawConn, ok := c.(syscall.RawConn)
+			if !ok {
+				log.Printf("[vpnlib] WARNING: DialControl received non-RawConn type: %T", c)
 				return nil
 			}
 			var protectErr error
-			err := c.Control(func(fd uintptr) {
+			err := rawConn.Control(func(fd uintptr) {
 				log.Printf("[vpnlib] Protecting socket fd=%d from VPN routing", fd)
 				if !protector.ProtectSocket(int32(fd)) {
 					protectErr = fmt.Errorf("protect socket fd=%d failed", fd)
@@ -217,27 +269,23 @@ func Connect(configJSON string, fd int) error {
 				return fmt.Errorf("raw conn control: %w", err)
 			}
 			return protectErr
-		},
+		}
+	} else {
+		log.Printf("[vpnlib] WARNING: no socket protector set, VPN routing loop may occur")
 	}
 
-	rawConn, err := dialer.Dial("tcp", cfg.Server)
+	// Dial via transport
+	log.Printf("[vpnlib] Step 2/4: Connecting to %s via %s transport ...", cfg.Server, tt)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := dialer.Dial(ctx, dialCfg)
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: TCP dial to %s failed: %v", cfg.Server, err)
-		setStatus("error: tcp: " + err.Error())
-		return fmt.Errorf("tcp connect: %w", err)
+		log.Printf("[vpnlib] ERROR: transport dial failed: %v", err)
+		setStatus("error: connect: " + err.Error())
+		return fmt.Errorf("transport dial: %w", err)
 	}
-	log.Printf("[vpnlib] TCP connected to %s (local=%s)", cfg.Server, rawConn.LocalAddr())
-
-	log.Printf("[vpnlib] Step 2/4: TLS handshake (SNI=%s, skipVerify=%v) ...", sni, cfg.SkipVerify)
-	tlsConn := tls.Client(rawConn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
-		log.Printf("[vpnlib] ERROR: TLS handshake failed: %v", err)
-		tlsConn.Close()
-		setStatus("error: tls: " + err.Error())
-		return fmt.Errorf("tls handshake: %w", err)
-	}
-	cs := tlsConn.ConnectionState()
-	log.Printf("[vpnlib] TLS handshake OK (version=0x%04x, cipher=0x%04x, proto=%s)", cs.Version, cs.CipherSuite, cs.NegotiatedProtocol)
+	log.Printf("[vpnlib] Transport connected to %s", cfg.Server)
 
 	// Authenticate
 	log.Printf("[vpnlib] Step 3/4: Sending auth token ...")
@@ -245,43 +293,43 @@ func Connect(configJSON string, fd int) error {
 	_, authToken, err := tlsdecoy.GenerateAuthToken(masterKey)
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: generate auth token: %v", err)
-		tlsConn.Close()
+		conn.Close()
 		setStatus("error: auth gen: " + err.Error())
 		return fmt.Errorf("generate auth: %w", err)
 	}
 	log.Printf("[vpnlib] Auth token generated, length=%d bytes", len(authToken))
 
-	if _, err := tlsConn.Write(authToken); err != nil {
+	if _, err := conn.Write(authToken); err != nil {
 		log.Printf("[vpnlib] ERROR: send auth token: %v", err)
-		tlsConn.Close()
+		conn.Close()
 		setStatus("error: auth send: " + err.Error())
 		return fmt.Errorf("send auth: %w", err)
 	}
 	log.Printf("[vpnlib] Auth token sent, waiting for server response (10s timeout) ...")
 
 	okBuf := make([]byte, 2)
-	tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.ReadFull(tlsConn, okBuf); err != nil {
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(conn, okBuf); err != nil {
 		log.Printf("[vpnlib] ERROR: reading auth response: %v", err)
-		tlsConn.Close()
+		conn.Close()
 		setStatus("error: auth response: " + err.Error())
 		return fmt.Errorf("auth response: %w", err)
 	}
-	tlsConn.SetReadDeadline(time.Time{})
+	conn.SetReadDeadline(time.Time{})
 
 	log.Printf("[vpnlib] Auth response received: %q", string(okBuf))
 	if string(okBuf) != "OK" {
 		log.Printf("[vpnlib] ERROR: auth rejected (got %q, expected \"OK\")", string(okBuf))
-		tlsConn.Close()
+		conn.Close()
 		setStatus("error: auth rejected")
 		return fmt.Errorf("auth rejected")
 	}
-	log.Printf("[vpnlib] Step 4/4: Authenticated OK")
+	log.Printf("[vpnlib] Step 4/4: Authenticated OK (transport=%s, fingerprint=%s)", tt, fp)
 
 	// Store connection state
 	current.mu.Lock()
 	current.connected = true
-	current.conn = tlsConn
+	current.conn = conn
 	current.tunFile = tunFile
 	current.status = "connected"
 	stopCh := current.stopCh
@@ -290,22 +338,22 @@ func Connect(configJSON string, fd int) error {
 	log.Printf("[vpnlib] Tunnel active, starting data relay goroutines")
 
 	// Create tunnel
-	tun := tunnel.New(keys, tlsConn)
+	tun := tunnel.New(keys, conn)
 
 	// Buffers
 	encBuf := make([]byte, 0, tunnel.MaxFrameSize+crypto.Overhead)
 	obfsBuf := make([]byte, 0, tunnel.MaxFrameSize+crypto.Overhead+obfs.HeaderSize+obfs.MaxPad)
 	_, _ = encBuf, obfsBuf // used by tunnel internally
 
-	// TUN → TLS (send)
+	// TUN → Transport (send)
 	go func() {
 		buf := make([]byte, tunnel.MaxFrameSize)
 		var sendCount int64
-		log.Printf("[vpnlib] TUN→TLS goroutine started, reading from TUN fd=%d", fd)
+		log.Printf("[vpnlib] TUN→Transport goroutine started, reading from TUN fd=%d", fd)
 		for {
 			select {
 			case <-stopCh:
-				log.Printf("[vpnlib] TUN→TLS goroutine stopping (stop signal), sent %d packets", sendCount)
+				log.Printf("[vpnlib] TUN→Transport goroutine stopping (stop signal), sent %d packets", sendCount)
 				return
 			default:
 			}
@@ -328,19 +376,19 @@ func Connect(configJSON string, fd int) error {
 			}
 			sendCount++
 			if sendCount%1000 == 0 {
-				log.Printf("[vpnlib] TUN→TLS stats: sent %d packets", sendCount)
+				log.Printf("[vpnlib] TUN→Transport stats: sent %d packets", sendCount)
 			}
 		}
 	}()
 
-	// TLS → TUN (receive) — blocks until disconnect
+	// Transport → TUN (receive) — blocks until disconnect
 	var recvCount int64
-	log.Printf("[vpnlib] TLS→TUN receive loop started, writing to TUN fd=%d", fd)
+	log.Printf("[vpnlib] Transport→TUN receive loop started, writing to TUN fd=%d", fd)
 	for {
 		select {
 		case <-stopCh:
-			log.Printf("[vpnlib] TLS→TUN loop stopping (stop signal), received %d packets", recvCount)
-			cleanup(tlsConn, tunFile)
+			log.Printf("[vpnlib] Transport→TUN loop stopping (stop signal), received %d packets", recvCount)
+			cleanup(conn, tunFile)
 			return nil
 		default:
 		}
@@ -348,14 +396,14 @@ func Connect(configJSON string, fd int) error {
 		plaintext, err := tun.Recv()
 		if err != nil {
 			log.Printf("[vpnlib] Recv error (after %d packets): %v", recvCount, err)
-			cleanup(tlsConn, tunFile)
+			cleanup(conn, tunFile)
 			setStatus("error: recv: " + err.Error())
 			return err
 		}
 
 		if _, err := tunFile.Write(plaintext); err != nil {
 			log.Printf("[vpnlib] TUN write error (after %d packets): %v", recvCount, err)
-			cleanup(tlsConn, tunFile)
+			cleanup(conn, tunFile)
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}

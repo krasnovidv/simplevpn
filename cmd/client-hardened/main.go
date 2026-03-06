@@ -1,23 +1,33 @@
 // Hardened VPN Client — DPI-resistant
 //
+// Supports raw TLS and WebSocket transports with uTLS fingerprint mimicry.
+//
 // # Usage
 //
+//	# Legacy raw TLS (backward compatible):
+//	sudo ./client-hardened \
+//	  -server yourdomain.com:443 \
+//	  -psk "my-secret"
+//
+//	# WebSocket + Chrome fingerprint (anti-DPI):
 //	sudo ./client-hardened \
 //	  -server yourdomain.com:443 \
 //	  -psk "my-secret" \
-//	  -tun-ip 10.0.0.2/24 \
-//	  -sni yourdomain.com
+//	  -transport ws \
+//	  -fingerprint chrome
 //
-// # Connection Flow
+// # Connection Flow (WebSocket transport)
 //
 //  1. TCP connection to server on port 443
-//  2. TLS 1.3 handshake — looks like regular HTTPS
-//  3. Client sends HMAC authentication token (56 bytes)
-//  4. Server verifies token, replies "OK"
-//  5. Tunnel active: IP packets -> encrypt -> obfuscate -> TLS -> server
+//  2. uTLS handshake with Chrome/Firefox/Safari fingerprint
+//  3. HTTP Upgrade to WebSocket (looks like browser WebSocket)
+//  4. Client sends auth token via WS binary frame
+//  5. Server replies "OK" via WS binary frame
+//  6. Tunnel active: IP packets -> encrypt -> obfuscate -> WS binary -> TLS
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -32,6 +42,9 @@ import (
 
 	"simplevpn/pkg/obfs"
 	"simplevpn/pkg/tlsdecoy"
+	"simplevpn/pkg/transport"
+	_ "simplevpn/pkg/transport/rawtls"
+	_ "simplevpn/pkg/transport/ws"
 	"simplevpn/pkg/tunnel"
 )
 
@@ -45,6 +58,8 @@ func main() {
 	routeAll := flag.Bool("route-all", false, "Route all traffic through VPN")
 	jitterMs := flag.Int("jitter", 5, "Max timing jitter in milliseconds")
 	skipVerify := flag.Bool("skip-verify", false, "Skip TLS certificate verification (testing only!)")
+	transportType := flag.String("transport", "tls", "Transport type: tls (raw) or ws (WebSocket)")
+	fingerprint := flag.String("fingerprint", "none", "TLS fingerprint: none, chrome, firefox, safari")
 	flag.Parse()
 
 	if *serverAddr == "" {
@@ -69,7 +84,7 @@ func main() {
 	defer tun.Close()
 	log.Printf("TUN %s: %s", *tunName, *tunIP)
 
-	// -- TLS connection --
+	// -- Resolve SNI --
 	host := *sni
 	if host == "" {
 		h, _, err := net.SplitHostPort(*serverAddr)
@@ -78,28 +93,42 @@ func main() {
 		}
 	}
 
-	tlsCfg := &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: *skipVerify,
-		MinVersion:         tls.VersionTLS13,
-		NextProtos:         []string{"h2", "http/1.1"},
-	}
+	// -- Transport dial --
+	tt := transport.Type(*transportType)
+	fp := transport.FingerprintProfile(*fingerprint)
 
-	log.Printf("Connecting to %s (TLS SNI: %s)...", *serverAddr, host)
+	log.Printf("Transport: type=%s, fingerprint=%s", tt, fp)
 
-	rawConn, err := net.DialTimeout("tcp", *serverAddr, 10*time.Second)
+	dialer, err := transport.NewDialer(tt, fp)
 	if err != nil {
-		log.Fatalf("TCP connect: %v", err)
+		log.Fatalf("Create transport: %v", err)
 	}
 
-	tlsConn := tls.Client(rawConn, tlsCfg)
-	if err := tlsConn.Handshake(); err != nil {
-		tlsConn.Close()
-		log.Fatalf("TLS handshake: %v", err)
+	dialCfg := &transport.DialConfig{
+		ServerAddr:  *serverAddr,
+		SNI:         host,
+		Fingerprint: fp,
 	}
-	log.Printf("TLS 1.3 handshake OK")
+	if *skipVerify {
+		dialCfg.TLSConfig = &tls.Config{
+			ServerName:         host,
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS13,
+			NextProtos:         []string{"http/1.1"},
+		}
+	}
 
-	defer tlsConn.Close()
+	log.Printf("Connecting to %s (transport=%s, SNI=%s) ...", *serverAddr, tt, host)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := dialer.Dial(ctx, dialCfg)
+	if err != nil {
+		log.Fatalf("Transport dial: %v", err)
+	}
+	defer conn.Close()
+	log.Printf("Transport connected to %s", *serverAddr)
 
 	// -- Authentication --
 	_, authToken, err := tlsdecoy.GenerateAuthToken(keys.Master)
@@ -107,16 +136,16 @@ func main() {
 		log.Fatalf("Generate auth token: %v", err)
 	}
 
-	if _, err := tlsConn.Write(authToken); err != nil {
+	if _, err := conn.Write(authToken); err != nil {
 		log.Fatalf("Send auth token: %v", err)
 	}
 
 	okBuf := make([]byte, 2)
-	tlsConn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.ReadFull(tlsConn, okBuf); err != nil {
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.ReadFull(conn, okBuf); err != nil {
 		log.Fatalf("Auth response: %v (wrong PSK or server unavailable)", err)
 	}
-	tlsConn.SetReadDeadline(time.Time{})
+	conn.SetReadDeadline(time.Time{})
 
 	if string(okBuf) != "OK" {
 		log.Fatalf("Server rejected authentication")
@@ -136,14 +165,14 @@ func main() {
 	go func() {
 		<-sigs
 		log.Println("\nShutting down...")
-		tlsConn.Close()
+		conn.Close()
 		os.Exit(0)
 	}()
 
 	// Create tunnel
-	tun2 := tunnel.New(keys, tlsConn)
+	tun2 := tunnel.New(keys, conn)
 
-	// -- TUN -> TLS (send to server) --
+	// -- TUN -> Transport (send to server) --
 	go func() {
 		buf := make([]byte, tunnel.MaxFrameSize)
 		for {
@@ -167,7 +196,7 @@ func main() {
 		}
 	}()
 
-	// -- TLS -> TUN (receive from server) --
+	// -- Transport -> TUN (receive from server) --
 	for {
 		plaintext, err := tun2.Recv()
 		if err != nil {
