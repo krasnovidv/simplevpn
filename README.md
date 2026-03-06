@@ -18,8 +18,24 @@ VPN-туннель, неотличимый от обычного HTTPS для с
 
 ## Быстрый старт
 
+### Docker-деплой на VPS (рекомендуется)
+
 ```bash
-# Сборка (Linux)
+# Скопировать файлы на сервер
+scp -r deploy/ Dockerfile docker-compose.yml server.example.yaml root@YOUR_SERVER:/opt/simplevpn/
+
+# Запустить деплой (IP-режим — самоподписанный сертификат)
+ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh YOUR_SERVER_IP"
+
+# Или с доменом (Let's Encrypt)
+ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh yourdomain.com domain your@email.com"
+```
+
+Скрипт сгенерирует PSK и API-токен — **сохраните их**.
+
+### Локальная сборка
+
+```bash
 go mod tidy
 make build
 

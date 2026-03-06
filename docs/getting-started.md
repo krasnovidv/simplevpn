@@ -9,7 +9,28 @@
 - **Root-доступ** — для создания TUN-интерфейса и работы с портом 443
 - **TLS-сертификат** — самоподписанный (тест) или Let's Encrypt (продакшн)
 
-## Установка
+## Вариант 1: Docker-деплой на VPS (рекомендуется)
+
+```bash
+# Скопировать файлы на VPS
+scp -r deploy/ Dockerfile docker-compose.yml server.example.yaml root@YOUR_SERVER:/opt/simplevpn/
+
+# Деплой по IP (самоподписанный сертификат)
+ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh YOUR_SERVER_IP"
+
+# Деплой с доменом (Let's Encrypt)
+ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh yourdomain.com domain your@email.com"
+```
+
+Скрипт автоматически:
+- Генерирует PSK и API-токен
+- Создаёт TLS-сертификат (самоподписанный или Let's Encrypt)
+- Настраивает firewall (NAT, ip_forward)
+- Запускает VPN-сервер в Docker
+
+**Сохраните PSK и API-токен** — они понадобятся для подключения клиентов.
+
+## Вариант 2: Локальная сборка
 
 ```bash
 git clone <repo-url> && cd simplevpn
@@ -21,7 +42,7 @@ make build
 - `simplevpn-server-hardened` — сервер
 - `simplevpn-client-hardened` — клиент
 
-## TLS-сертификат
+## TLS-сертификат (для локальной сборки)
 
 ### Для тестов (самоподписанный)
 
@@ -40,7 +61,7 @@ certbot certonly --standalone -d yourdomain.com
 - `/etc/letsencrypt/live/yourdomain.com/fullchain.pem`
 - `/etc/letsencrypt/live/yourdomain.com/privkey.pem`
 
-## Запуск сервера
+## Запуск сервера (локально)
 
 ```bash
 sudo ./simplevpn-server-hardened \
