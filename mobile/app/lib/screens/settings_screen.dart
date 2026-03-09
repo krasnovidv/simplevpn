@@ -13,7 +13,9 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   final _storage = ConfigStorage();
   final _serverCtrl = TextEditingController();
-  final _pskCtrl = TextEditingController();
+  final _serverKeyCtrl = TextEditingController();
+  final _usernameCtrl = TextEditingController();
+  final _passwordCtrl = TextEditingController();
   final _sniCtrl = TextEditingController();
   bool _skipVerify = false;
   bool _autoReconnect = false;
@@ -33,7 +35,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
     if (config != null) {
       _serverCtrl.text = config.server;
-      _pskCtrl.text = config.psk;
+      _serverKeyCtrl.text = config.serverKey;
+      _usernameCtrl.text = config.username;
+      _passwordCtrl.text = config.password;
       _sniCtrl.text = config.sni;
       _skipVerify = config.skipVerify;
     }
@@ -80,10 +84,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
 
           TextField(
-            controller: _pskCtrl,
+            controller: _serverKeyCtrl,
             obscureText: true,
             decoration: const InputDecoration(
-              labelText: 'Pre-Shared Key',
+              labelText: 'Server Key',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _usernameCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Username',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _passwordCtrl,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Password',
               border: OutlineInputBorder(),
             ),
           ),
@@ -149,7 +172,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save() async {
     final config = VpnConfig(
       server: _serverCtrl.text,
-      psk: _pskCtrl.text,
+      serverKey: _serverKeyCtrl.text,
+      username: _usernameCtrl.text,
+      password: _passwordCtrl.text,
       sni: _sniCtrl.text,
       skipVerify: _skipVerify,
     );
@@ -168,7 +193,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (config != null) {
       _serverCtrl.text = config.server;
-      _pskCtrl.text = config.psk;
+      _serverKeyCtrl.text = config.serverKey;
+      _usernameCtrl.text = config.username;
+      _passwordCtrl.text = config.password;
       _sniCtrl.text = config.sni;
       _skipVerify = config.skipVerify;
       await _save();
@@ -178,7 +205,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     _serverCtrl.dispose();
-    _pskCtrl.dispose();
+    _serverKeyCtrl.dispose();
+    _usernameCtrl.dispose();
+    _passwordCtrl.dispose();
     _sniCtrl.dispose();
     super.dispose();
   }

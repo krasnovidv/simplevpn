@@ -70,16 +70,22 @@ class VpnService {
 
   String _maskConfig(String configJson) {
     try {
-      final decoded = configJson;
-      // Simple PSK masking in the JSON string
-      return decoded.replaceAllMapped(
-        RegExp(r'"psk"\s*:\s*"([^"]*)"'),
+      var result = configJson;
+      // Mask server_key
+      result = result.replaceAllMapped(
+        RegExp(r'"server_key"\s*:\s*"([^"]*)"'),
         (m) {
-          final psk = m.group(1) ?? '';
-          final masked = psk.length > 4 ? '${psk.substring(0, 4)}...' : psk;
-          return '"psk":"$masked"';
+          final key = m.group(1) ?? '';
+          final masked = key.length > 4 ? '${key.substring(0, 4)}...' : key;
+          return '"server_key":"$masked"';
         },
       );
+      // Mask password
+      result = result.replaceAllMapped(
+        RegExp(r'"password"\s*:\s*"([^"]*)"'),
+        (m) => '"password":"***"',
+      );
+      return result;
     } catch (_) {
       return '<unparseable>';
     }

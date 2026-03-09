@@ -19,7 +19,6 @@ package vpnlib
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -32,8 +31,6 @@ import (
 	"syscall"
 	"time"
 
-	"simplevpn/pkg/crypto"
-	"simplevpn/pkg/obfs"
 	"simplevpn/pkg/tlsdecoy"
 	"simplevpn/pkg/transport"
 	_ "simplevpn/pkg/transport/rawtls"
@@ -44,7 +41,9 @@ import (
 // Config is the JSON configuration passed from the mobile app.
 type Config struct {
 	Server      string `json:"server"`                // host:port
-	PSK         string `json:"psk"`
+	ServerKey   string `json:"server_key"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
 	SNI         string `json:"sni"`
 	SkipVerify  bool   `json:"skip_verify,omitempty"`
 	Transport   string `json:"transport,omitempty"`   // "ws" (default) or "tls"
@@ -143,7 +142,7 @@ func defaultFingerprint() transport.FingerprintProfile {
 }
 
 // Connect establishes a VPN connection.
-//   - configJSON: JSON string with server, psk, sni, transport, fingerprint fields
+//   - configJSON: JSON string with server, server_key, username, password, sni, transport, fingerprint fields
 //   - fd: TUN device file descriptor (from platform VPN service)
 //
 // This function blocks until the connection is closed or Disconnect() is called.
@@ -166,23 +165,23 @@ func Connect(configJSON string, fd int) error {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
-	// Log config (mask PSK)
-	pskPreview := cfg.PSK
-	if len(pskPreview) > 4 {
-		pskPreview = pskPreview[:4] + "..."
+	// Log config (mask sensitive fields)
+	keyPreview := cfg.ServerKey
+	if len(keyPreview) > 4 {
+		keyPreview = keyPreview[:4] + "..."
 	}
-	log.Printf("[vpnlib] Config: server=%s, sni=%s, skipVerify=%v, psk=%s, transport=%s, fingerprint=%s",
-		cfg.Server, cfg.SNI, cfg.SkipVerify, pskPreview, cfg.Transport, cfg.Fingerprint)
+	log.Printf("[vpnlib] Config: server=%s, sni=%s, skipVerify=%v, server_key=%s, user=%s, transport=%s, fingerprint=%s",
+		cfg.Server, cfg.SNI, cfg.SkipVerify, keyPreview, cfg.Username, cfg.Transport, cfg.Fingerprint)
 
-	if cfg.Server == "" || cfg.PSK == "" {
-		log.Printf("[vpnlib] ERROR: server=%q psk=%q — both are required", cfg.Server, pskPreview)
-		setStatus("error: server and psk are required")
-		return fmt.Errorf("server and psk are required")
+	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
+		log.Printf("[vpnlib] ERROR: server, server_key, username, and password are all required")
+		setStatus("error: server, server_key, username, and password are required")
+		return fmt.Errorf("server, server_key, username, and password are required")
 	}
 
 	// Derive keys
-	log.Printf("[vpnlib] Deriving keys from PSK...")
-	keys, err := tunnel.DeriveKeys(cfg.PSK)
+	log.Printf("[vpnlib] Deriving keys from server key...")
+	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: derive keys: %v", err)
 		setStatus("error: derive keys: " + err.Error())
@@ -243,7 +242,7 @@ func Connect(configJSON string, fd int) error {
 		dialCfg.TLSConfig = &tls.Config{
 			ServerName:         sni,
 			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
 			NextProtos:         []string{"http/1.1"},
 		}
 	}
@@ -287,25 +286,24 @@ func Connect(configJSON string, fd int) error {
 	}
 	log.Printf("[vpnlib] Transport connected to %s", cfg.Server)
 
-	// Authenticate
-	log.Printf("[vpnlib] Step 3/4: Sending auth token ...")
-	masterKey := sha256.Sum256([]byte(cfg.PSK))
-	_, authToken, err := tlsdecoy.GenerateAuthToken(masterKey)
+	// Authenticate with credentials
+	log.Printf("[vpnlib] Step 3/4: Sending credentials for user %q ...", cfg.Username)
+	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: generate auth token: %v", err)
+		log.Printf("[vpnlib] ERROR: generate credential frame: %v", err)
 		conn.Close()
 		setStatus("error: auth gen: " + err.Error())
-		return fmt.Errorf("generate auth: %w", err)
+		return fmt.Errorf("generate credentials: %w", err)
 	}
-	log.Printf("[vpnlib] Auth token generated, length=%d bytes", len(authToken))
+	log.Printf("[vpnlib] Credential frame generated, length=%d bytes", len(credFrame))
 
-	if _, err := conn.Write(authToken); err != nil {
-		log.Printf("[vpnlib] ERROR: send auth token: %v", err)
+	if _, err := conn.Write(credFrame); err != nil {
+		log.Printf("[vpnlib] ERROR: send credentials: %v", err)
 		conn.Close()
 		setStatus("error: auth send: " + err.Error())
-		return fmt.Errorf("send auth: %w", err)
+		return fmt.Errorf("send credentials: %w", err)
 	}
-	log.Printf("[vpnlib] Auth token sent, waiting for server response (10s timeout) ...")
+	log.Printf("[vpnlib] Credentials sent, waiting for server response (10s timeout) ...")
 
 	okBuf := make([]byte, 2)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -339,11 +337,6 @@ func Connect(configJSON string, fd int) error {
 
 	// Create tunnel
 	tun := tunnel.New(keys, conn)
-
-	// Buffers
-	encBuf := make([]byte, 0, tunnel.MaxFrameSize+crypto.Overhead)
-	obfsBuf := make([]byte, 0, tunnel.MaxFrameSize+crypto.Overhead+obfs.HeaderSize+obfs.MaxPad)
-	_, _ = encBuf, obfsBuf // used by tunnel internally
 
 	// TUN → Transport (send)
 	go func() {

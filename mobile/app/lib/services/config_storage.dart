@@ -1,3 +1,4 @@
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/vpn_config.dart';
 
@@ -6,16 +7,19 @@ class ConfigStorage {
   static const _keyAutoReconnect = 'auto_reconnect';
   static const _keyKillSwitch = 'kill_switch';
 
+  // Credentials stored encrypted (Android EncryptedSharedPreferences / iOS Keychain)
+  final _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
   Future<VpnConfig?> loadConfig() async {
-    final prefs = await SharedPreferences.getInstance();
-    final json = prefs.getString(_keyConfig);
+    final json = await _secureStorage.read(key: _keyConfig);
     if (json == null) return null;
     return VpnConfig.fromJson(json);
   }
 
   Future<void> saveConfig(VpnConfig config) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_keyConfig, config.toJson());
+    await _secureStorage.write(key: _keyConfig, value: config.toJson());
   }
 
   Future<bool> getAutoReconnect() async {

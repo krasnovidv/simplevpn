@@ -48,7 +48,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String? _validateConfig(VpnConfig config) {
     if (config.server.isEmpty) return 'Server address is empty';
-    if (config.psk.isEmpty) return 'Pre-shared key is empty';
+    if (config.serverKey.isEmpty) return 'Server key is empty';
+    if (config.username.isEmpty) return 'Username is empty';
+    if (config.password.isEmpty) return 'Password is empty';
     if (!config.server.contains(':')) return 'Server must include port (host:port)';
     return null;
   }
