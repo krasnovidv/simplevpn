@@ -1,6 +1,6 @@
 # Multi-stage build for SimpleVPN server
 # Stage 1: Build
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -20,6 +20,8 @@ RUN apk add --no-cache \
     ca-certificates
 
 COPY --from=builder /bin/simplevpn-server /usr/local/bin/simplevpn-server
+COPY deploy/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # Default config location
 VOLUME ["/etc/simplevpn"]
@@ -29,5 +31,5 @@ EXPOSE 443/tcp
 # Management API port
 EXPOSE 8443/tcp
 
-ENTRYPOINT ["simplevpn-server"]
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["-config", "/etc/simplevpn/server.yaml"]

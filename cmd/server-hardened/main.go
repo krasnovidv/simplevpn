@@ -244,19 +244,19 @@ func serveConnection(
 	}
 
 	if transport.IsWebSocketUpgrade(peeked) {
-		log.Printf("[server] WebSocket upgrade detected from %s", remoteAddr)
+		log.Printf("[server] WebSocket upgrade detected from %s (peeked=%x)", remoteAddr, peeked)
 		serveWebSocket(peekConn, keys, tun, remoteAddr)
 	} else {
-		log.Printf("[server] Raw TLS auth detected from %s", remoteAddr)
+		log.Printf("[server] Raw TLS auth detected from %s (peeked=%x)", remoteAddr, peeked)
 		serveRawAuth(peekConn, keys, tun, remoteAddr)
 	}
 }
 
 // serveWebSocket handles a WebSocket client connection.
 func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, tun *tunnel.TunDevice, remoteAddr string) {
-	// Complete WebSocket upgrade — pass peeked data so it's replayed
-	peeked, _ := conn.Peek(3) // already peeked, returns cached data
-	wsConn, err := ws.ServerUpgrade(conn.Conn, peeked)
+	// PeekConn.Read() transparently replays peeked bytes,
+	// so ServerUpgrade reads the full HTTP request from it.
+	wsConn, err := ws.ServerUpgrade(conn, nil)
 	if err != nil {
 		log.Printf("[server] WS upgrade failed from %s: %v -> decoy mode", remoteAddr, err)
 		serveDecoy(conn)

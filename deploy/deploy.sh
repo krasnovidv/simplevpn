@@ -90,7 +90,7 @@ fi
 # Start server
 echo ""
 echo "=== Starting VPN server ==="
-docker compose up -d vpn-server
+docker compose up -d --build vpn-server
 
 echo ""
 echo "=== Deployment complete ==="
