@@ -175,9 +175,11 @@ func clientUpgrade(conn net.Conn, host string) (*Conn, error) {
 		return nil, fmt.Errorf("send upgrade request: %w", err)
 	}
 
-	// Read response
+	// Read response via buffered reader.
+	// Keep the reader — it may have buffered data beyond the HTTP response.
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
 	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("read upgrade response: %w", err)
@@ -196,7 +198,19 @@ func clientUpgrade(conn net.Conn, host string) (*Conn, error) {
 	}
 
 	log.Printf("[transport/ws] Upgrade accepted (101 Switching Protocols)")
-	return WrapClient(conn), nil
+
+	// Transfer any data buffered by the bufio.Reader to the WS conn
+	// so it is not lost when we switch to reading from the raw conn.
+	wsConn := WrapClient(conn)
+	if br.Buffered() > 0 {
+		extra := make([]byte, br.Buffered())
+		n, _ := br.Read(extra)
+		if n > 0 {
+			wsConn.readBuf = extra[:n]
+			log.Printf("[transport/ws] Transferred %d buffered bytes to WS conn", n)
+		}
+	}
+	return wsConn, nil
 }
 
 // ServerUpgrade performs the server-side WebSocket handshake.
@@ -219,8 +233,10 @@ func ServerUpgrade(conn net.Conn, peekedData []byte) (*Conn, error) {
 		reader = conn
 	}
 
-	// Parse HTTP request
-	req, err := http.ReadRequest(bufio.NewReader(reader))
+	// Parse HTTP request via buffered reader.
+	// Keep the reader — it may have buffered data beyond the HTTP request.
+	br := bufio.NewReader(reader)
+	req, err := http.ReadRequest(br)
 	if err != nil {
 		return nil, fmt.Errorf("read upgrade request: %w", err)
 	}
@@ -254,7 +270,19 @@ func ServerUpgrade(conn net.Conn, peekedData []byte) (*Conn, error) {
 	}
 
 	log.Printf("[transport/ws] WebSocket upgrade complete for %s (path=%s)", conn.RemoteAddr(), req.URL.Path)
-	return WrapServer(conn), nil
+
+	// Transfer any data buffered by the bufio.Reader to the WS conn
+	// so it is not lost when we switch to reading from the raw conn.
+	wsConn := WrapServer(conn)
+	if br.Buffered() > 0 {
+		extra := make([]byte, br.Buffered())
+		n, _ := br.Read(extra)
+		if n > 0 {
+			wsConn.readBuf = extra[:n]
+			log.Printf("[transport/ws] Transferred %d buffered bytes to WS conn", n)
+		}
+	}
+	return wsConn, nil
 }
 
 // computeAcceptKey calculates the Sec-WebSocket-Accept value (RFC 6455 §4.2.2).

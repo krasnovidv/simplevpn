@@ -146,6 +146,129 @@ func TestComputeAcceptKey(t *testing.T) {
 	}
 }
 
+// TestUpgradeBufferedDataNotLost verifies that data arriving immediately after
+// the HTTP upgrade response is not lost by the bufio.Reader used for HTTP parsing.
+// This can happen when server sends data right after 101 (or client sends right
+// after the upgrade request) and the bufio.Reader buffers it during HTTP parsing.
+func TestUpgradeBufferedDataNotLost(t *testing.T) {
+	serverRaw, clientRaw := net.Pipe()
+	defer serverRaw.Close()
+	defer clientRaw.Close()
+
+	var serverWSConn *Conn
+	var serverErr error
+
+	go func() {
+		serverWSConn, serverErr = ServerUpgrade(serverRaw, nil)
+		if serverErr != nil {
+			return
+		}
+		// Server immediately sends a WS frame after upgrade
+		serverWSConn.Write([]byte("server-hello"))
+	}()
+
+	// Client does upgrade
+	clientRaw.SetDeadline(time.Now().Add(2 * time.Second))
+	clientWSConn, err := clientUpgrade(clientRaw, "test.example.com")
+	if err != nil {
+		t.Fatalf("client upgrade: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if serverErr != nil {
+		t.Fatalf("server upgrade: %v", serverErr)
+	}
+
+	// Client should be able to read the frame sent immediately after upgrade
+	buf := make([]byte, 1024)
+	clientRaw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := clientWSConn.Read(buf)
+	if err != nil {
+		t.Fatalf("client read after upgrade: %v", err)
+	}
+	if !bytes.Equal(buf[:n], []byte("server-hello")) {
+		t.Errorf("got %q, want %q", buf[:n], "server-hello")
+	}
+
+	// Also test client→server direction: client sends frame right after upgrade
+	go func() {
+		clientWSConn.Write([]byte("client-hello"))
+	}()
+
+	serverRaw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = serverWSConn.Read(buf)
+	if err != nil {
+		t.Fatalf("server read after upgrade: %v", err)
+	}
+	if !bytes.Equal(buf[:n], []byte("client-hello")) {
+		t.Errorf("got %q, want %q", buf[:n], "client-hello")
+	}
+}
+
+// TestUpgradeFollowedByTunnelFrames simulates the real VPN flow:
+// upgrade → credential frame → OK → tunnel frames, ensuring no data loss.
+func TestUpgradeFollowedByTunnelFrames(t *testing.T) {
+	serverRaw, clientRaw := net.Pipe()
+	defer serverRaw.Close()
+	defer clientRaw.Close()
+
+	var serverWSConn *Conn
+	var serverErr error
+
+	go func() {
+		serverWSConn, serverErr = ServerUpgrade(serverRaw, nil)
+	}()
+
+	clientRaw.SetDeadline(time.Now().Add(2 * time.Second))
+	clientWSConn, err := clientUpgrade(clientRaw, "test.example.com")
+	if err != nil {
+		t.Fatalf("client upgrade: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if serverErr != nil {
+		t.Fatalf("server upgrade: %v", serverErr)
+	}
+
+	// Simulate: client sends credential frame
+	credFrame := []byte{0x02, 0x05, 'a', 'l', 'i', 'c', 'e', 0x00, 0x04, 'p', 'a', 's', 's'}
+	go func() { clientWSConn.Write(credFrame) }()
+
+	buf := make([]byte, 1024)
+	serverRaw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := serverWSConn.Read(buf)
+	if err != nil {
+		t.Fatalf("server read cred frame: %v", err)
+	}
+	if !bytes.Equal(buf[:n], credFrame) {
+		t.Errorf("cred frame mismatch: got %d bytes, want %d", n, len(credFrame))
+	}
+
+	// Server sends OK
+	go func() { serverWSConn.Write([]byte("OK")) }()
+
+	clientRaw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = clientWSConn.Read(buf)
+	if err != nil {
+		t.Fatalf("client read OK: %v", err)
+	}
+	if !bytes.Equal(buf[:n], []byte("OK")) {
+		t.Errorf("got %q, want %q", buf[:n], "OK")
+	}
+
+	// Now simulate tunnel frames (length-prefixed encrypted data)
+	tunnelFrame := bytes.Repeat([]byte{0xAB}, 500)
+	go func() { clientWSConn.Write(tunnelFrame) }()
+
+	serverRaw.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err = serverWSConn.Read(buf)
+	if err != nil {
+		t.Fatalf("server read tunnel frame: %v", err)
+	}
+	if !bytes.Equal(buf[:n], tunnelFrame) {
+		t.Errorf("tunnel frame: got %d bytes, want %d", n, len(tunnelFrame))
+	}
+}
+
 func TestMultipleFrames(t *testing.T) {
 	serverRaw, clientRaw := net.Pipe()
 	defer serverRaw.Close()
