@@ -2,7 +2,7 @@
 set -e
 
 CONFIG_DIR="/etc/simplevpn"
-CONFIG_FILE="$CONFIG_DIR/config.yaml"
+CONFIG_FILE="$CONFIG_DIR/server.yaml"
 USERS_FILE="$CONFIG_DIR/users.yaml"
 
 # Set up NAT for VPN clients
@@ -19,8 +19,8 @@ if [ ! -f "$CONFIG_FILE" ]; then
 listen: ":443"
 server_key: "$SERVER_KEY"
 users_file: "$USERS_FILE"
-cert: "$CONFIG_DIR/certs/cert.pem"
-key: "$CONFIG_DIR/certs/key.pem"
+cert: "$CONFIG_DIR/certs/server.crt"
+key: "$CONFIG_DIR/certs/server.key"
 tun_ip: "10.0.0.1/24"
 tun_name: "tun0"
 mtu: 1380

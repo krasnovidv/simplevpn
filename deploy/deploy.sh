@@ -1,6 +1,6 @@
 #!/bin/bash
 # SimpleVPN Server deployment script
-# Usage: ./deploy.sh [domain] [email]
+# Usage: ./deploy.sh <ip-or-domain> [mode] [email]
 
 set -euo pipefail
 
