@@ -10,7 +10,7 @@ Restart=always
 RestartSec=5
 
 # Security hardening
-NoNewPrivileges=no
+NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/dev/net/tun
