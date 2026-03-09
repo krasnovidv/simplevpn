@@ -32,10 +32,13 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         private var vpnInterface: ParcelFileDescriptor? = null
         private var configJson: String? = null
         private var autoReconnect: Boolean = false
+        private var killSwitch: Boolean = false
         private var connectThread: Thread? = null
     }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var reconnectAttempt: Int = 0
+    private val maxReconnectDelay: Long = 60_000 // 60 seconds max
 
     override fun onCreate() {
         super.onCreate()
@@ -61,7 +64,8 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             return START_NOT_STICKY
         }
         autoReconnect = intent.getBooleanExtra("auto_reconnect", false)
-        Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect")
+        killSwitch = intent.getBooleanExtra("kill_switch", false)
+        Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect, killSwitch=$killSwitch")
 
         connect(configJson!!)
         return START_STICKY
@@ -118,15 +122,22 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                     Log.e(TAG, "Vpnlib.connect() error: ${e.message}", e)
                     currentStatus = "error: ${e.message}"
                 } finally {
-                    Log.d(TAG, "Connect thread finished, cleaning up")
-                    vpnInterface?.close()
-                    vpnInterface = null
-                    if (currentStatus != "disconnected") {
+                    Log.d(TAG, "Connect thread finished, cleaning up (killSwitch=$killSwitch)")
+                    if (killSwitch) {
+                        // Keep TUN open to block all traffic (kill switch)
+                        Log.i(TAG, "Kill switch active — keeping TUN interface to block traffic")
+                        updateNotification("VPN disconnected — traffic blocked (kill switch)")
                         currentStatus = "disconnected"
+                    } else {
+                        vpnInterface?.close()
+                        vpnInterface = null
+                        if (currentStatus != "disconnected") {
+                            currentStatus = "disconnected"
+                        }
+                        updateNotification("Disconnected")
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
                     }
-                    updateNotification("Disconnected")
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf()
                 }
             }, "vpnlib-connect")
             connectThread!!.start()
@@ -135,6 +146,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             // Status stays "connecting" until Go-side confirms via Vpnlib.status()
             Log.i(TAG, "VPN tunnel thread started, status remains 'connecting' until Go confirms")
             updateNotification("Connecting...")
+            reconnectAttempt = 0 // Reset backoff on new connection attempt
 
             if (autoReconnect) {
                 setupNetworkMonitoring()
@@ -175,20 +187,34 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             override fun onAvailable(network: Network) {
                 Log.i(TAG, "Network available, checking VPN status")
                 if (currentStatus != "connected" && configJson != null) {
-                    Log.i(TAG, "Auto-reconnecting...")
-                    connect(configJson!!)
+                    val delay = calculateBackoff()
+                    Log.i(TAG, "Auto-reconnecting in ${delay}ms (attempt $reconnectAttempt)")
+                    updateNotification("Reconnecting in ${delay / 1000}s...")
+                    Thread {
+                        Thread.sleep(delay)
+                        if (currentStatus != "connected" && configJson != null) {
+                            reconnectAttempt++
+                            connect(configJson!!)
+                        }
+                    }.start()
                 }
             }
 
             override fun onLost(network: Network) {
                 Log.i(TAG, "Network lost")
                 currentStatus = "disconnected"
-                updateNotification("Reconnecting...")
+                updateNotification("Waiting for network...")
             }
         }
 
         cm.registerDefaultNetworkCallback(networkCallback!!)
         Log.i(TAG, "Network monitoring enabled for auto-reconnect")
+    }
+
+    private fun calculateBackoff(): Long {
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s max
+        val delay = (1000L * (1L shl reconnectAttempt.coerceAtMost(5))).coerceAtMost(maxReconnectDelay)
+        return delay
     }
 
     private fun removeNetworkMonitoring() {

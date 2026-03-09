@@ -224,7 +224,7 @@ class _HomeScreenState extends State<HomeScreen> {
         VpnStatus.disconnected => 'Not Connected',
       };
 
-  void _toggleConnection() {
+  Future<void> _toggleConnection() async {
     if (_status == VpnStatus.connected) {
       _log.info('User pressed Disconnect');
       setState(() => _actionInProgress = true);
@@ -242,7 +242,13 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       _log.debug('Config validated OK, starting connection');
       setState(() => _actionInProgress = true);
-      _vpnService.connect(_config!.toJson());
+      final autoReconnect = await _storage.getAutoReconnect();
+      final killSwitch = await _storage.getKillSwitch();
+      _vpnService.connect(
+        _config!.toJson(),
+        autoReconnect: autoReconnect,
+        killSwitch: killSwitch,
+      );
     } else {
       _log.error('Connect pressed but no config loaded');
     }

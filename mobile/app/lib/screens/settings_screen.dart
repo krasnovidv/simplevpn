@@ -18,6 +18,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _passwordCtrl = TextEditingController();
   final _sniCtrl = TextEditingController();
   bool _skipVerify = false;
+  String _transport = '';
+  String _fingerprint = '';
   bool _autoReconnect = false;
   bool _killSwitch = false;
   bool _loaded = false;
@@ -40,6 +42,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passwordCtrl.text = config.password;
       _sniCtrl.text = config.sni;
       _skipVerify = config.skipVerify;
+      _transport = config.transport;
+      _fingerprint = config.fingerprint;
     }
 
     setState(() => _loaded = true);
@@ -132,6 +136,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 16),
 
+          // Transport settings
+          Text('Transport', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 12),
+
+          DropdownButtonFormField<String>(
+            value: _transport,
+            decoration: const InputDecoration(
+              labelText: 'Transport Protocol',
+              border: OutlineInputBorder(),
+            ),
+            items: VpnConfig.transportOptions
+                .map((v) => DropdownMenuItem(
+                      value: v,
+                      child: Text(VpnConfig.transportLabels[v] ?? v),
+                    ))
+                .toList(),
+            onChanged: (v) => setState(() => _transport = v ?? ''),
+          ),
+          const SizedBox(height: 12),
+
+          DropdownButtonFormField<String>(
+            value: _fingerprint,
+            decoration: const InputDecoration(
+              labelText: 'TLS Fingerprint',
+              border: OutlineInputBorder(),
+            ),
+            items: VpnConfig.fingerprintOptions
+                .map((v) => DropdownMenuItem(
+                      value: v,
+                      child: Text(VpnConfig.fingerprintLabels[v] ?? v),
+                    ))
+                .toList(),
+            onChanged: (v) => setState(() => _fingerprint = v ?? ''),
+          ),
+
+          const SizedBox(height: 16),
+
           FilledButton(
             onPressed: _save,
             child: const Text('Save Configuration'),
@@ -177,6 +218,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       password: _passwordCtrl.text,
       sni: _sniCtrl.text,
       skipVerify: _skipVerify,
+      transport: _transport,
+      fingerprint: _fingerprint,
     );
     await _storage.saveConfig(config);
 
@@ -198,6 +241,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _passwordCtrl.text = config.password;
       _sniCtrl.text = config.sni;
       _skipVerify = config.skipVerify;
+      _transport = config.transport;
+      _fingerprint = config.fingerprint;
       await _save();
     }
   }

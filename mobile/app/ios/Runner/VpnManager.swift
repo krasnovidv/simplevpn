@@ -38,7 +38,8 @@ class VpnPlugin: NSObject, FlutterPlugin {
                 return
             }
             let killSwitch = args["kill_switch"] as? Bool ?? false
-            startVpn(config: config, killSwitch: killSwitch, result: result)
+            let autoReconnect = args["auto_reconnect"] as? Bool ?? false
+            startVpn(config: config, killSwitch: killSwitch, autoReconnect: autoReconnect, result: result)
 
         case "disconnect":
             stopVpn(result: result)
@@ -59,7 +60,7 @@ class VpnPlugin: NSObject, FlutterPlugin {
         }
     }
 
-    private func startVpn(config: String, killSwitch: Bool, result: @escaping FlutterResult) {
+    private func startVpn(config: String, killSwitch: Bool, autoReconnect: Bool, result: @escaping FlutterResult) {
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
             let manager = managers?.first ?? NETunnelProviderManager()
 
@@ -76,12 +77,16 @@ class VpnPlugin: NSObject, FlutterPlugin {
 
             manager.protocolConfiguration = proto
             manager.isEnabled = true
-            manager.isOnDemandEnabled = true  // Auto-reconnect
+            manager.isOnDemandEnabled = autoReconnect
 
             // On-demand rules for auto-reconnect
-            let connectRule = NEOnDemandRuleConnect()
-            connectRule.interfaceTypeMatch = .any
-            manager.onDemandRules = [connectRule]
+            if autoReconnect {
+                let connectRule = NEOnDemandRuleConnect()
+                connectRule.interfaceTypeMatch = .any
+                manager.onDemandRules = [connectRule]
+            } else {
+                manager.onDemandRules = []
+            }
 
             manager.saveToPreferences { error in
                 if let error = error {

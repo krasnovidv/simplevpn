@@ -37,7 +37,9 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         when (call.method) {
             "connect" -> {
                 val config = call.argument<String>("config") ?: ""
-                startVpn(config, result)
+                val autoReconnect = call.argument<Boolean>("auto_reconnect") ?: false
+                val killSwitch = call.argument<Boolean>("kill_switch") ?: false
+                startVpn(config, autoReconnect, killSwitch, result)
             }
             "disconnect" -> {
                 stopVpn(result)
@@ -68,8 +70,8 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
-    private fun startVpn(config: String, result: Result) {
-        Log.d(TAG, "startVpn called, config length=${config.length}")
+    private fun startVpn(config: String, autoReconnect: Boolean, killSwitch: Boolean, result: Result) {
+        Log.d(TAG, "startVpn called, config length=${config.length}, autoReconnect=$autoReconnect, killSwitch=$killSwitch")
         val act = activity ?: run {
             Log.e(TAG, "startVpn: no activity available")
             result.error("NO_ACTIVITY", "No activity available", null)
@@ -87,6 +89,8 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         Log.d(TAG, "VPN permission granted, starting service")
         val serviceIntent = Intent(act, SimpleVpnService::class.java).apply {
             putExtra("config", config)
+            putExtra("auto_reconnect", autoReconnect)
+            putExtra("kill_switch", killSwitch)
         }
         act.startService(serviceIntent)
         result.success(null)

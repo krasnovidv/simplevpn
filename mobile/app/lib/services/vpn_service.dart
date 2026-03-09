@@ -44,15 +44,23 @@ class VpnService {
     _listeners.remove(listener);
   }
 
-  Future<void> connect(String configJson) async {
+  Future<void> connect(
+    String configJson, {
+    bool autoReconnect = false,
+    bool killSwitch = false,
+  }) async {
     // Log config with masked PSK
     final masked = _maskConfig(configJson);
     _log.info('Connecting to server...');
-    _log.debug('Config: $masked');
+    _log.debug('Config: $masked, autoReconnect=$autoReconnect, killSwitch=$killSwitch');
     _setStatus(VpnStatus.connecting);
     try {
       _log.debug('Calling platform connect...');
-      await _channel.invokeMethod('connect', {'config': configJson});
+      await _channel.invokeMethod('connect', {
+        'config': configJson,
+        'auto_reconnect': autoReconnect,
+        'kill_switch': killSwitch,
+      });
       _log.info('Connect request sent to native layer');
       _startPolling();
     } on PlatformException catch (e) {
