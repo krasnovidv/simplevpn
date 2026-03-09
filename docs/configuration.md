@@ -2,60 +2,110 @@
 
 # Конфигурация
 
-## Флаги сервера (server-hardened)
+## YAML-конфигурация сервера
 
-| Флаг | Default | Описание |
-|------|---------|----------|
-| `-listen` | `:443` | TCP-адрес для прослушивания (TLS) |
-| `-psk` | — | Pre-shared key (обязательно) |
-| `-cert` | `cert.pem` | Путь к TLS-сертификату |
-| `-key` | `key.pem` | Путь к TLS приватному ключу |
-| `-tun-ip` | `10.0.0.1/24` | IP-адрес TUN-интерфейса (CIDR) |
-| `-tun-name` | `tun0` | Имя TUN-интерфейса |
-| `-mtu` | `1380` | MTU TUN-интерфейса (меньше стандартного из-за TLS overhead) |
+Основной способ конфигурации — файл `server.yaml`:
+
+```yaml
+listen: ":443"
+server_key: "a1b2c3d4e5f6..."    # 64-char hex, openssl rand -hex 32
+users_file: "/etc/simplevpn/users.yaml"
+
+cert: "/etc/simplevpn/certs/server.crt"
+key: "/etc/simplevpn/certs/server.key"
+
+tun_ip: "10.0.0.1/24"
+tun_name: "tun0"
+mtu: 1380
+
+log_level: "info"
+
+transport:
+  extra_listens:
+    - ":80"
+    - ":8080"
+
+api:
+  enabled: true
+  listen: ":8443"
+  bearer_token: "e5f6a7b8..."
+```
+
+| Поле | Обязательно | Default | Описание |
+|------|-------------|---------|----------|
+| `listen` | да | `:443` | TCP-адрес VPN |
+| `server_key` | да | — | 64-char hex ключ шифрования туннеля |
+| `users_file` | да | — | Путь к файлу пользователей |
+| `cert` | да | `cert.pem` | TLS-сертификат |
+| `key` | да | `key.pem` | TLS приватный ключ |
+| `tun_ip` | да | `10.0.0.1/24` | IP TUN-интерфейса (CIDR) |
+| `tun_name` | нет | `tun0` | Имя TUN-интерфейса |
+| `mtu` | нет | `1380` | MTU (500-9000) |
+| `log_level` | нет | `info` | Уровень логов: debug, info, warn, error |
+| `transport.extra_listens` | нет | `[]` | Дополнительные порты |
+| `api.enabled` | нет | `false` | Включить REST API |
+| `api.listen` | нет | `:8443` | Адрес API |
+| `api.bearer_token` | при api | — | Bearer-токен для API |
+
+## Флаги сервера (CLI)
+
+CLI-флаги переопределяют значения из конфиг-файла:
+
+| Флаг | Описание |
+|------|----------|
+| `-config` | Путь к YAML-конфигу |
+| `-listen` | TCP-адрес (TLS) |
+| `-server-key` | Ключ шифрования туннеля |
+| `-users-file` | Путь к файлу пользователей |
+| `-cert` | TLS-сертификат |
+| `-key` | TLS приватный ключ |
+| `-tun-ip` | IP TUN-интерфейса (CIDR) |
+| `-tun-name` | Имя TUN-интерфейса |
+| `-mtu` | MTU |
 
 ### Пример
 
 ```bash
-sudo ./simplevpn-server-hardened \
-  -listen :443 \
-  -psk "my-strong-secret-key" \
-  -cert /etc/letsencrypt/live/example.com/fullchain.pem \
-  -key  /etc/letsencrypt/live/example.com/privkey.pem \
-  -tun-ip 10.0.0.1/24
+simplevpn-server -config server.yaml -listen :8443 -log-level debug
 ```
 
-## Флаги клиента (client-hardened)
+## Флаги клиента (CLI)
 
 | Флаг | Default | Описание |
 |------|---------|----------|
 | `-server` | — | Адрес сервера host:port (обязательно) |
-| `-psk` | — | Pre-shared key (обязательно, должен совпадать с сервером) |
-| `-sni` | (из `-server`) | SNI для TLS handshake (домен сервера) |
-| `-transport` | `tls` | Транспорт: `tls` (raw TLS) или `ws` (WebSocket, anti-DPI) |
+| `-server-key` | — | Ключ шифрования туннеля (обязательно) |
+| `-username` | — | Имя пользователя (обязательно) |
+| `-password` | — | Пароль (обязательно) |
+| `-sni` | (из `-server`) | SNI для TLS handshake |
+| `-transport` | `tls` | Транспорт: `tls` (raw TLS) или `ws` (WebSocket) |
 | `-fingerprint` | `none` | Профиль TLS отпечатка: `none`, `chrome`, `firefox`, `safari` |
-| `-tun-ip` | `10.0.0.2/24` | IP-адрес TUN-интерфейса клиента (CIDR) |
+| `-tun-ip` | `10.0.0.2/24` | IP TUN-интерфейса клиента (CIDR) |
 | `-tun-name` | `tun0` | Имя TUN-интерфейса |
-| `-mtu` | `1380` | MTU TUN-интерфейса |
+| `-mtu` | `1380` | MTU |
 | `-route-all` | `false` | Направить весь трафик через VPN |
-| `-jitter` | `5` | Максимальный timing jitter (мс), 0 = выключить |
-| `-skip-verify` | `false` | Не проверять TLS-сертификат сервера (только для тестов!) |
+| `-jitter` | `5` | Макс. timing jitter (мс), 0 = выкл. |
+| `-skip-verify` | `false` | Не проверять TLS-сертификат (только тесты!) |
 
 ### Пример — базовое подключение
 
 ```bash
-sudo ./simplevpn-client-hardened \
+sudo ./simplevpn-client \
   -server example.com:443 \
-  -psk "my-strong-secret-key" \
+  -server-key "a1b2c3d4e5f6..." \
+  -username alice \
+  -password strongpass123 \
   -tun-ip 10.0.0.2/24
 ```
 
 ### Пример — весь трафик через VPN
 
 ```bash
-sudo ./simplevpn-client-hardened \
+sudo ./simplevpn-client \
   -server example.com:443 \
-  -psk "my-strong-secret-key" \
+  -server-key "a1b2c3d4e5f6..." \
+  -username alice \
+  -password strongpass123 \
   -tun-ip 10.0.0.2/24 \
   -route-all
 ```
@@ -63,20 +113,24 @@ sudo ./simplevpn-client-hardened \
 ### Пример — WebSocket + Chrome fingerprint (anti-DPI)
 
 ```bash
-sudo ./simplevpn-client-hardened \
+sudo ./simplevpn-client \
   -server example.com:443 \
-  -psk "my-strong-secret-key" \
+  -server-key "a1b2c3d4e5f6..." \
+  -username alice \
+  -password strongpass123 \
   -transport ws \
   -fingerprint chrome \
   -tun-ip 10.0.0.2/24
 ```
 
-### Пример — тестовое подключение (самоподписанный сертификат)
+### Пример — самоподписанный сертификат (тест)
 
 ```bash
-sudo ./simplevpn-client-hardened \
+sudo ./simplevpn-client \
   -server 192.168.1.100:443 \
-  -psk "test-key" \
+  -server-key "a1b2c3d4e5f6..." \
+  -username alice \
+  -password strongpass123 \
   -tun-ip 10.0.0.2/24 \
   -skip-verify
 ```
@@ -88,23 +142,25 @@ QR-код для мобильного приложения содержит JSON
 ```json
 {
   "server": "example.com:443",
-  "psk": "my-strong-secret-key",
+  "server_key": "a1b2c3d4e5f6...",
+  "username": "alice",
+  "password": "strongpass123",
   "sni": "example.com",
   "transport": "ws",
   "fingerprint": "chrome"
 }
 ```
 
-| Поле | Default | Описание |
-|------|---------|----------|
-| `server` | — | Адрес сервера host:port (обязательно) |
-| `psk` | — | Pre-shared key (обязательно) |
-| `sni` | из server | SNI для TLS |
-| `transport` | `ws` | Транспорт: `ws` или `tls` |
-| `fingerprint` | `chrome` (Android), `safari` (iOS) | Профиль TLS отпечатка |
-| `skip_verify` | `false` | Пропуск верификации сертификата |
-
-Старые QR-коды без полей `transport`/`fingerprint` используют значения по умолчанию (WebSocket + Chrome).
+| Поле | Обязательно | Default | Описание |
+|------|-------------|---------|----------|
+| `server` | да | — | Адрес сервера host:port |
+| `server_key` | да | — | Ключ шифрования туннеля |
+| `username` | да | — | Имя пользователя |
+| `password` | да | — | Пароль |
+| `sni` | нет | из server | SNI для TLS |
+| `transport` | нет | `ws` | Транспорт: `ws` или `tls` |
+| `fingerprint` | нет | `chrome` (Android), `safari` (iOS) | TLS отпечаток |
+| `skip_verify` | нет | `false` | Пропуск верификации сертификата |
 
 ## MTU
 
@@ -125,3 +181,4 @@ QR-код для мобильного приложения содержит JSON
 
 - [Начало работы](getting-started.md) — пошаговая инструкция запуска
 - [Безопасность](security.md) — криптографические детали
+- [API-справочник](api.md) — управление пользователями через REST API

@@ -31,26 +31,14 @@ ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh YOUR_SERVER_IP"
 ssh root@YOUR_SERVER "cd /opt/simplevpn && bash deploy/deploy.sh yourdomain.com domain your@email.com"
 ```
 
-Скрипт сгенерирует PSK и API-токен — **сохраните их**.
+Скрипт сгенерирует `server_key` и API-токен — **сохраните их**.
 
-### Локальная сборка
+После деплоя создайте пользователя через API:
 
 ```bash
-go mod tidy
-make build
-
-# Самоподписанный сертификат (для тестов)
-make cert
-
-# Сервер
-sudo ./simplevpn-server-hardened \
-  -listen :443 -psk "my-secret" \
-  -cert cert.pem -key key.pem -tun-ip 10.0.0.1/24
-
-# Клиент
-sudo ./simplevpn-client-hardened \
-  -server yourserver.com:443 -psk "my-secret" \
-  -tun-ip 10.0.0.2/24 -route-all
+curl -k -X POST https://YOUR_SERVER:8443/api/users \
+  -H "Authorization: Bearer API_TOKEN" \
+  -d '{"username":"alice","password":"strongpass123"}'
 ```
 
 ## Ключевые возможности
@@ -59,7 +47,7 @@ sudo ./simplevpn-client-hardened \
 - **Active Probe Resistance** — зонды получают HTML-страницу nginx
 - **AES-256-GCM + ChaCha20 masking** — шифрование и маскировка энтропии
 - **Random padding + timing jitter** — скрывает размеры и паттерны пакетов
-- **HMAC-SHA256 аутентификация** — только клиенты с PSK открывают туннель
+- **Username/Password аутентификация** — управление пользователями через REST API
 - **Sliding window replay protection** — защита от повторного воспроизведения
 
 ## Тесты
@@ -77,6 +65,8 @@ make bench         # бенчмарки
 |--------|----------|
 | [Начало работы](docs/getting-started.md) | Установка, настройка, запуск |
 | [Архитектура](docs/architecture.md) | Структура проекта, протокол, поток данных |
-| [Конфигурация](docs/configuration.md) | Все флаги сервера и клиента |
+| [Конфигурация](docs/configuration.md) | YAML-конфигурация, флаги сервера и клиента |
 | [Безопасность](docs/security.md) | Криптография, протокол аутентификации, модель угроз |
+| [API-справочник](docs/api.md) | REST API управления пользователями и сервером |
 | [Мобильное приложение](docs/mobile-build.md) | Сборка Android-клиента, gomobile, Flutter |
+| [Продакшн-гайд](docs/production-playbook.md) | Полный цикл: деплой, настройка, клиенты, траблшутинг |

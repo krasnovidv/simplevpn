@@ -1,10 +1,10 @@
-[← Безопасность](security.md) · [Назад к README](../README.md)
+[← API-справочник](api.md) · [Назад к README](../README.md) · [Продакшн-гайд →](production-playbook.md)
 
 # Сборка мобильного приложения
 
 ## Требования
 
-- **Go** 1.21+ с установленным `gomobile`
+- **Go** 1.25+ с установленным `gomobile`
 - **Android SDK** с NDK (для gomobile)
 - **Flutter** 3.19+ с настроенным Android toolchain
 - **Java** 17 (для Gradle)
@@ -69,7 +69,13 @@ flutter build apk --release
 ```bash
 flutter install
 # или
-adb install build/app/outputs/flutter-apk/app-debug.apk
+adb install -r build/app/outputs/flutter-apk/app-debug.apk
+```
+
+### Полная сборка одной командой
+
+```bash
+cd mobile && make install-android && cd app && flutter build apk --debug
 ```
 
 ## Тесты
@@ -94,7 +100,7 @@ go test ./vpnlib/
 
 1. Откройте приложение → Настройки
 2. Введите сервер: `ваш-сервер:443`
-3. Введите PSK
+3. Введите server key, username и password
 4. Включите "Skip TLS Verification" (если самоподписанный сертификат)
 5. Сохраните → Подключиться
 
@@ -103,7 +109,13 @@ go test ./vpnlib/
 Отсканируйте QR с JSON-конфигурацией:
 
 ```json
-{"server":"ваш-сервер:443","psk":"ВАШ_PSK","sni":"ваш-сервер","skip_verify":true}
+{"server":"ваш-сервер:443","server_key":"KEY","username":"alice","password":"strongpass123","skip_verify":true}
+```
+
+Генерация QR из командной строки:
+
+```bash
+echo -n '{"server":"YOUR_IP:443","server_key":"KEY","username":"alice","password":"strongpass123","skip_verify":true}' | qrencode -o config.png
 ```
 
 ## Структура проекта
@@ -138,4 +150,5 @@ mobile/
 ## See Also
 
 - [Начало работы](getting-started.md) — установка сервера
+- [Конфигурация](configuration.md) — формат QR JSON и параметры
 - [Архитектура](architecture.md) — общая структура проекта
