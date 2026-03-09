@@ -1,7 +1,9 @@
-# Plan: Авторизация по логину/паролю (вместо PSK)
+# Production Readiness Plan
 
-**Дата:** 2026-03-09
-**Подход:** Вариант 1 (простой) — credentials передаются после TLS handshake
+**Source:** `docs/production-playbook.md`
+**Created:** 2026-03-09
+**Refined:** 2026-03-09 (iteration 2)
+**Mode:** Fast
 
 ## Settings
 
@@ -9,118 +11,56 @@
 - **Logging:** Verbose (DEBUG)
 - **Docs:** No
 
-## Обзор
+## Summary
 
-Переход от PSK (Pre-Shared Key) авторизации к авторизации по логину и паролю.
-Текущая система использует единый PSK для всех клиентов (нет идентификации).
-Новая система даёт per-user identity с bcrypt-хешами на сервере.
+Codebase analysis against the production playbook shows core server, client, deploy, and mobile functionality is **fully implemented**. Plan focuses on fixing gaps, hardening, wiring partially-implemented mobile features, and fixing broken tests.
 
-### Протокол (после TLS 1.3 handshake):
-```
-Client → Server:
-  [1 byte: version = 0x02]
-  [1 byte: username_len]
-  [N bytes: username (UTF-8)]
-  [2 bytes: password_len (big-endian)]
-  [N bytes: password (UTF-8)]
+**Removed from original plan:** API tests (Task #8) and config tests (Task #9) — already exist with comprehensive coverage (24 and 7 test functions respectively).
 
-Server → Client:
-  "OK" (2 bytes) — успех
-  decoy HTML    — провал
-```
+## Phase 1: Config & Hardening Fixes
 
-Пароль защищён TLS 1.3 — передаётся в открытом виде только внутри зашифрованного туннеля.
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 1 | Update root `server.example.yaml` to new auth schema (PSK → server_key + users_file) | `server.example.yaml` | done |
+| 2 | Fix `simplevpn.service` — set `NoNewPrivileges=true` | `deploy/simplevpn.service` | done |
 
-## Tasks
+## Phase 2: Mobile App Gaps
 
-### Фаза 1: Серверная основа
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 3 | Add transport/fingerprint fields to Dart VpnConfig model + dropdown selectors in settings UI | `vpn_config.dart`, `settings_screen.dart`, `vpn_service.dart` | done |
+| 4 | Wire auto-reconnect toggle from Dart → platform + add exponential backoff (Android network monitoring + iOS on-demand already exist) | `vpn_service.dart`, `SimpleVpnService.kt`, `VpnPlugin.kt` | done |
+| 5 | Implement Android kill switch + wire Dart toggle to both platforms (iOS `includeAllNetworks` already works) | `SimpleVpnService.kt`, `VpnPlugin.kt`, `vpn_service.dart` | done |
 
-1. - [x] **[Task #1] Создать пакет pkg/auth — хранение пользователей (bcrypt)**
-   - `pkg/auth/store.go` — FileStore (YAML), потокобезопасный (sync.RWMutex)
-   - `pkg/auth/user.go` — User struct {Username, PasswordHash, CreatedAt, Disabled}
-   - Authenticate, AddUser, RemoveUser, ListUsers, UpdatePassword
-   - Логирование: username в логах, пароль НИКОГДА
+## Phase 3: Deploy Verification
 
-2. - [x] **[Task #2] Изменить протокол аутентификации в pkg/tlsdecoy**
-   - Удалить: `GenerateAuthToken`, `VerifyAuthToken`, `AuthToken` struct, `computeHMAC`, `AuthTokenSize`
-   - Добавить: `GenerateCredAuth(username, password)` → credential frame (version 0x02)
-   - Добавить: `ParseCredAuth(data)` → username, password
-   - Добавить: `ReadCredAuth(conn)` → читает frame из соединения с таймаутом
-   - *Blocked by: Task #1*
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 6 | Verify deploy.sh end-to-end flow matches playbook (all 6 steps) | `deploy/deploy.sh`, `setup-firewall.sh`, `entrypoint.sh` | done |
+| 7 | Fix docker-compose.yml volume `:ro` conflict + add cert renewal automation | `docker-compose.yml` | done |
 
-3. - [x] **[Task #3] Обновить конфиг сервера (pkg/config)**
-   - Убрать `PSK`, добавить `ServerKey` (yaml: `server_key`), `UsersFile` (yaml: `users_file`)
-   - Обновить `Validate()` — убрать проверку PSK, добавить проверку ServerKey и UsersFile
-   - Дефолт `UsersFile`: `/etc/simplevpn/users.yaml`
-   - *Blocked by: Task #1*
+## Phase 4: Test Fixes & Coverage
 
-4. - [x] **[Task #4] Обновить tunnel.DeriveKeys — принимать server_key**
-   - `pkg/tunnel/keys.go`: переименовать параметр `psk` → `serverKey`, обновить комментарии
-   - Обновить вызовы в 3 местах: server main.go, client main.go, mobile vpnlib.go
-   - Обновить тесты в `tunnel_test.go`
-   - *Blocked by: Task #3*
+| # | Task | Files | Status |
+|---|------|-------|--------|
+| 8 | Fix broken mobile tests — update PSK → login/password auth fields | `mobile/vpnlib/vpnlib_test.go`, `mobile/app/test/models/vpn_config_test.dart` | done |
+| 9 | Add transport/fingerprint fields to Flutter tests | `mobile/app/test/models/vpn_config_test.dart` | done |
 
-### Фаза 2: Интеграция сервера
+## Commit Plan
 
-5. - [x] **[Task #5] Обновить серверный main.go — credential auth**
-   - Загрузка `UserStore` из `cfg.UsersFile`
-   - `serveAuth()`: `ReadCredAuth(conn)` → `store.Authenticate(username, password)`
-   - `DeriveKeys(cfg.ServerKey)` вместо `DeriveKeys(cfg.PSK)`
-   - Маскировка паролей: логировать username, НИКОГДА password
-   - Передать store в API для user management
-   - *Blocked by: Tasks #1, #2, #3, #4*
+- **After Phase 1 (tasks 1-2):** `fix: update example config and harden systemd service`
+- **After Phase 2 (tasks 3-5):** `feat(mobile): add transport/fingerprint settings, wire auto-reconnect and kill switch`
+- **After Phase 3 (tasks 6-7):** `fix(deploy): fix docker-compose volumes and align deploy scripts with playbook`
+- **After Phase 4 (tasks 8-9):** `test: fix broken mobile tests and add transport/fingerprint test coverage`
 
-6. - [x] **[Task #6] Обновить cmd/client-hardened — credentials вместо PSK**
-   - Убрать `-psk`, добавить `-username`, `-password`, `-server-key`
-   - `GenerateCredAuth(username, password)` вместо `GenerateAuthToken(keys.Master)`
-   - `DeriveKeys(*serverKey)` вместо `DeriveKeys(*psk)`
-   - Обновить doc comment с примерами
-   - *Blocked by: Tasks #2, #4*
+## What's Already Working
 
-7. - [x] **[Task #7] Добавить API для управления пользователями**
-   - CRUD: GET/POST/DELETE/PUT users (защищены Bearer token)
-   - `Server` struct получает `store *auth.FileStore`
-   - Маскировка паролей в request/response
-   - *Blocked by: Tasks #1, #3*
-
-**--- Commit checkpoint: "feat(auth): replace PSK with login/password auth" ---**
-
-### Фаза 3: Клиенты
-
-8. - [x] **[Task #8] Обновить mobile/vpnlib — credentials**
-   - Config: `ServerKey`+`Username`+`Password` вместо `PSK`
-   - Connect(): `DeriveKeys(cfg.ServerKey)`, `GenerateCredAuth(username, password)` вместо HMAC token
-   - Маскировка паролей в логах
-   - *Blocked by: Tasks #2, #4*
-
-9. - [x] **[Task #9] Обновить Flutter UI — login/password**
-   - VpnConfig model: serverKey, username, password вместо psk
-   - Settings screen: поля Username, Password, Server Key вместо PSK
-   - QR формат: `{"server":"...","server_key":"...","username":"...","password":"...","sni":"..."}`
-   - Config storage: обновить ключи SharedPreferences
-   - *Blocked by: Task #8*
-
-**--- Commit checkpoint: "feat(mobile): update auth to login/password" ---**
-
-### Фаза 4: Deploy & Тесты
-
-10. - [x] **[Task #10] Обновить deploy конфиг и пример YAML**
-    - Пример конфига: `server_key` + `users_file` вместо `psk`
-    - `deploy/users.yaml.example` — шаблон файла пользователей
-    - `deploy/entrypoint.sh` — генерация server_key и users.yaml при первом запуске
-    - *Blocked by: Task #3*
-
-11. - [x] **[Task #11] Написать тесты для credential auth**
-    - `pkg/auth/store_test.go` — CRUD, bcrypt, concurrent access, edge cases
-    - `pkg/tlsdecoy/tlsdecoy_test.go` — credential frame roundtrip, edge cases
-    - `pkg/api/api_test.go` — user CRUD через API, auth required
-    - Проверить маскировку паролей в логах
-    - *Blocked by: Tasks #1, #2, #7*
-
-**--- Commit checkpoint: "test(auth): add tests for credential auth" ---**
-
-## Ключи шифрования туннеля
-
-Сейчас `tunnel.DeriveKeys(psk)` деривирует ключи шифрования из PSK.
-Решение: новое поле `server_key` в конфиге — фиксированный секрет для шифрования туннеля.
-Генерируется один раз при установке. Клиент получает его через QR/настройки вместе с credentials.
+Based on deep codebase exploration, these are **fully implemented and tested**:
+- Server: 8 CLI flags, config parsing with all fields (server_key, users_file, transport, API)
+- Client: 10 CLI flags including transport, fingerprint, route-all
+- Auth: FileStore with bcrypt hashing, user CRUD, enable/disable — 10 tests in store_test.go
+- API: 10 endpoints (user CRUD, disable/enable, status, clients, disconnect, config) — 24 tests in api_test.go
+- Config: YAML loading, defaults, validation — 7 tests in config_test.go
+- Deploy: deploy.sh, entrypoint.sh, setup-firewall.sh, Dockerfile (Go 1.25, multi-stage), docker-compose.yml
+- Mobile: vpnlib Go bindings (Connect/Disconnect/Status/Logs), Flutter app with QR scan + settings UI
+- Mobile partial: Android auto-reconnect (ConnectivityManager), iOS kill switch (includeAllNetworks), iOS on-demand reconnect
