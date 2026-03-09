@@ -14,16 +14,16 @@ func TestConfigParsing(t *testing.T) {
 	}{
 		{
 			name:  "full config",
-			input: `{"server":"1.2.3.4:443","psk":"secret","sni":"example.com","skip_verify":true}`,
+			input: `{"server":"1.2.3.4:443","server_key":"secret","username":"alice","password":"pass123","sni":"example.com","skip_verify":true}`,
 			check: func(c Config) bool {
-				return c.Server == "1.2.3.4:443" && c.PSK == "secret" && c.SNI == "example.com" && c.SkipVerify
+				return c.Server == "1.2.3.4:443" && c.ServerKey == "secret" && c.Username == "alice" && c.Password == "pass123" && c.SNI == "example.com" && c.SkipVerify
 			},
 		},
 		{
 			name:  "minimal config",
-			input: `{"server":"host:443","psk":"key"}`,
+			input: `{"server":"host:443","server_key":"key","username":"bob","password":"pwd"}`,
 			check: func(c Config) bool {
-				return c.Server == "host:443" && c.PSK == "key" && c.SNI == "" && !c.SkipVerify
+				return c.Server == "host:443" && c.ServerKey == "key" && c.Username == "bob" && c.Password == "pwd" && c.SNI == "" && !c.SkipVerify
 			},
 		},
 		{
@@ -33,7 +33,7 @@ func TestConfigParsing(t *testing.T) {
 		},
 		{
 			name:  "skip_verify false by default",
-			input: `{"server":"h:1","psk":"p"}`,
+			input: `{"server":"h:1","server_key":"k","username":"u","password":"p"}`,
 			check: func(c Config) bool {
 				return !c.SkipVerify
 			},
@@ -91,15 +91,27 @@ func TestConnectValidation(t *testing.T) {
 	current = &state{status: "disconnected"}
 
 	// Empty server should fail
-	err := Connect(`{"server":"","psk":"key"}`, 0)
+	err := Connect(`{"server":"","server_key":"key","username":"u","password":"p"}`, 0)
 	if err == nil {
 		t.Fatal("expected error for empty server")
 	}
 
-	// Empty PSK should fail
-	err = Connect(`{"server":"host:443","psk":""}`, 0)
+	// Empty server_key should fail
+	err = Connect(`{"server":"host:443","server_key":"","username":"u","password":"p"}`, 0)
 	if err == nil {
-		t.Fatal("expected error for empty psk")
+		t.Fatal("expected error for empty server_key")
+	}
+
+	// Empty username should fail
+	err = Connect(`{"server":"host:443","server_key":"key","username":"","password":"p"}`, 0)
+	if err == nil {
+		t.Fatal("expected error for empty username")
+	}
+
+	// Empty password should fail
+	err = Connect(`{"server":"host:443","server_key":"key","username":"u","password":""}`, 0)
+	if err == nil {
+		t.Fatal("expected error for empty password")
 	}
 
 	// Invalid JSON should fail
