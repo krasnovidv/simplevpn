@@ -243,13 +243,15 @@ func ServerUpgrade(conn net.Conn, peekedData []byte) (*Conn, error) {
 
 	// Validate upgrade request
 	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
-		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
-		return nil, fmt.Errorf("not a WebSocket upgrade request")
+		log.Printf("[transport/ws] Rejected non-WS request from %s: method=%s path=%s upgrade=%q host=%q",
+			conn.RemoteAddr(), req.Method, req.URL.Path, req.Header.Get("Upgrade"), req.Host)
+		// Do NOT write a response here — the caller (serveDecoy) handles it.
+		return nil, fmt.Errorf("not a WebSocket upgrade request (upgrade=%q)", req.Header.Get("Upgrade"))
 	}
 
 	wsKey := req.Header.Get("Sec-WebSocket-Key")
 	if wsKey == "" {
-		conn.Write([]byte("HTTP/1.1 400 Bad Request\r\n\r\n"))
+		log.Printf("[transport/ws] Missing Sec-WebSocket-Key from %s", conn.RemoteAddr())
 		return nil, fmt.Errorf("missing Sec-WebSocket-Key")
 	}
 
