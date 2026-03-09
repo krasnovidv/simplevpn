@@ -7,12 +7,16 @@
 //	# Legacy raw TLS (backward compatible):
 //	sudo ./client-hardened \
 //	  -server yourdomain.com:443 \
-//	  -psk "my-secret"
+//	  -server-key "my-secret" \
+//	  -username "user1" \
+//	  -password "pass123"
 //
 //	# WebSocket + Chrome fingerprint (anti-DPI):
 //	sudo ./client-hardened \
 //	  -server yourdomain.com:443 \
-//	  -psk "my-secret" \
+//	  -server-key "my-secret" \
+//	  -username "user1" \
+//	  -password "pass123" \
 //	  -transport ws \
 //	  -fingerprint chrome
 //
@@ -21,7 +25,7 @@
 //  1. TCP connection to server on port 443
 //  2. uTLS handshake with Chrome/Firefox/Safari fingerprint
 //  3. HTTP Upgrade to WebSocket (looks like browser WebSocket)
-//  4. Client sends auth token via WS binary frame
+//  4. Client sends credential frame via WS binary frame
 //  5. Server replies "OK" via WS binary frame
 //  6. Tunnel active: IP packets -> encrypt -> obfuscate -> WS binary -> TLS
 package main
@@ -50,7 +54,9 @@ import (
 
 func main() {
 	serverAddr := flag.String("server", "", "Server address host:port (required)")
-	psk := flag.String("psk", "", "Pre-shared key (required)")
+	serverKey := flag.String("server-key", "", "Server key for tunnel encryption (required)")
+	username := flag.String("username", "", "Username for authentication (required)")
+	password := flag.String("password", "", "Password for authentication (required)")
 	sni := flag.String("sni", "", "SNI for TLS handshake (optional)")
 	tunIP := flag.String("tun-ip", "10.0.0.2/24", "Client TUN IP (CIDR)")
 	tunName := flag.String("tun-name", "tun0", "TUN interface name")
@@ -65,12 +71,18 @@ func main() {
 	if *serverAddr == "" {
 		log.Fatal("Specify -server")
 	}
-	if *psk == "" {
-		log.Fatal("Specify -psk")
+	if *serverKey == "" {
+		log.Fatal("Specify -server-key")
+	}
+	if *username == "" {
+		log.Fatal("Specify -username")
+	}
+	if *password == "" {
+		log.Fatal("Specify -password")
 	}
 
-	// -- Derive keys from PSK --
-	keys, err := tunnel.DeriveKeys(*psk)
+	// -- Derive keys from server key --
+	keys, err := tunnel.DeriveKeys(*serverKey)
 	if err != nil {
 		log.Fatalf("Init crypto: %v", err)
 	}
@@ -130,20 +142,21 @@ func main() {
 	defer conn.Close()
 	log.Printf("Transport connected to %s", *serverAddr)
 
-	// -- Authentication --
-	_, authToken, err := tlsdecoy.GenerateAuthToken(keys.Master)
+	// -- Authentication (credential frame v2) --
+	credFrame, err := tlsdecoy.GenerateCredAuth(*username, *password)
 	if err != nil {
-		log.Fatalf("Generate auth token: %v", err)
+		log.Fatalf("Generate credential frame: %v", err)
 	}
 
-	if _, err := conn.Write(authToken); err != nil {
-		log.Fatalf("Send auth token: %v", err)
+	if _, err := conn.Write(credFrame); err != nil {
+		log.Fatalf("Send credentials: %v", err)
 	}
+	log.Printf("[client] Credentials sent for user %q", *username)
 
 	okBuf := make([]byte, 2)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	if _, err := io.ReadFull(conn, okBuf); err != nil {
-		log.Fatalf("Auth response: %v (wrong PSK or server unavailable)", err)
+		log.Fatalf("Auth response: %v (invalid credentials or server unavailable)", err)
 	}
 	conn.SetReadDeadline(time.Time{})
 

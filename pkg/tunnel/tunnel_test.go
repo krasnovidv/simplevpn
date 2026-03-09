@@ -17,28 +17,28 @@ func TestDeriveKeys(t *testing.T) {
 		t.Fatal("Obfuscator is nil")
 	}
 
-	// Same PSK should produce same keys
+	// Same server key should produce same keys
 	keys2, err := DeriveKeys("test-psk-123")
 	if err != nil {
 		t.Fatalf("DeriveKeys (2nd): %v", err)
 	}
 	if keys.Master != keys2.Master {
-		t.Error("Master keys differ for same PSK")
+		t.Error("Master keys differ for same server key")
 	}
 	if keys.Enc != keys2.Enc {
-		t.Error("Encryption keys differ for same PSK")
+		t.Error("Encryption keys differ for same server key")
 	}
 	if keys.Obfs != keys2.Obfs {
-		t.Error("Obfuscation keys differ for same PSK")
+		t.Error("Obfuscation keys differ for same server key")
 	}
 
-	// Different PSK should produce different keys
+	// Different server key should produce different keys
 	keys3, err := DeriveKeys("different-psk")
 	if err != nil {
 		t.Fatalf("DeriveKeys (3rd): %v", err)
 	}
 	if keys.Master == keys3.Master {
-		t.Error("Master keys should differ for different PSK")
+		t.Error("Master keys should differ for different server key")
 	}
 }
 

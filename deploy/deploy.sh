@@ -45,14 +45,15 @@ else
     KEY_PATH="/etc/letsencrypt/live/${HOST}/privkey.pem"
 fi
 
-# Generate PSK if not exists
+# Generate server key if config doesn't exist
 if [ ! -f config/server.yaml ]; then
-    PSK=$(openssl rand -hex 32)
+    SERVER_KEY=$(openssl rand -hex 32)
     API_TOKEN=$(openssl rand -hex 16)
 
     cat > config/server.yaml <<EOF
 listen: ":443"
-psk: "${PSK}"
+server_key: "${SERVER_KEY}"
+users_file: "/etc/simplevpn/users.yaml"
 cert: "${CERT_PATH}"
 key: "${KEY_PATH}"
 
@@ -69,10 +70,15 @@ api:
 EOF
 
     echo "Config created: config/server.yaml"
-    echo "PSK: ${PSK}"
-    echo "API Token: ${API_TOKEN}"
-    echo ""
-    echo "SAVE THESE VALUES — they won't be shown again!"
+
+    # Write secrets to a file with restricted permissions (not to stdout/logs)
+    cat > config/.secrets <<SECRETS
+server_key=${SERVER_KEY}
+api_token=${API_TOKEN}
+SECRETS
+    chmod 600 config/.secrets
+    echo "Secrets saved to config/.secrets (chmod 600)"
+    echo "Read secrets: cat config/.secrets"
 else
     echo "Config already exists: config/server.yaml"
 fi

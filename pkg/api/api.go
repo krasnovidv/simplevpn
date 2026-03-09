@@ -12,11 +12,58 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"simplevpn/pkg/auth"
 	"simplevpn/pkg/config"
 )
+
+// rateLimiter tracks request counts per IP with a sliding window.
+type rateLimiter struct {
+	mu       sync.Mutex
+	requests map[string][]time.Time
+	limit    int
+	window   time.Duration
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{
+		requests: make(map[string][]time.Time),
+		limit:    limit,
+		window:   window,
+	}
+}
+
+func (rl *rateLimiter) allow(ip string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rl.window)
+
+	// Remove expired entries
+	entries := rl.requests[ip]
+	valid := entries[:0]
+	for _, t := range entries {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+
+	if len(valid) == 0 {
+		delete(rl.requests, ip)
+	}
+
+	if len(valid) >= rl.limit {
+		rl.requests[ip] = valid
+		return false
+	}
+
+	rl.requests[ip] = append(valid, now)
+	return true
+}
 
 // ClientInfo holds information about a connected VPN client.
 type ClientInfo struct {
@@ -36,19 +83,23 @@ type Server struct {
 	mu      sync.RWMutex
 	clients map[string]*ClientInfo
 
+	store        *auth.FileStore
 	disconnectFn func(clientID string) error
+	limiter      *rateLimiter
 
 	mux        *http.ServeMux
 	httpServer *http.Server
 }
 
 // NewServer creates a new management API server.
-func NewServer(cfg *config.ServerConfig, version string) *Server {
+func NewServer(cfg *config.ServerConfig, version string, store *auth.FileStore) *Server {
 	s := &Server{
 		cfg:       cfg,
 		startTime: time.Now(),
 		version:   version,
 		clients:   make(map[string]*ClientInfo),
+		store:     store,
+		limiter:   newRateLimiter(30, time.Minute),
 	}
 
 	mux := http.NewServeMux()
@@ -56,6 +107,7 @@ func NewServer(cfg *config.ServerConfig, version string) *Server {
 	mux.HandleFunc("/api/clients", s.authMiddleware(s.handleClients))
 	mux.HandleFunc("/api/clients/", s.authMiddleware(s.handleClientAction))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
+	s.registerUserRoutes(mux)
 
 	s.mux = mux
 	s.httpServer = &http.Server{
@@ -136,9 +188,20 @@ func (s *Server) Shutdown() error {
 	return s.httpServer.Close()
 }
 
-// authMiddleware checks the bearer token.
+// authMiddleware checks the bearer token and applies rate limiting.
 func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Rate limit by IP
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+		if !s.limiter.allow(ip) {
+			log.Printf("[api] Rate limit exceeded from %s", r.RemoteAddr)
+			http.Error(w, `{"error":"too many requests"}`, http.StatusTooManyRequests)
+			return
+		}
+
 		token := r.Header.Get("Authorization")
 		expected := "Bearer " + s.cfg.API.BearerToken
 
@@ -203,7 +266,7 @@ func (s *Server) handleClientAction(w http.ResponseWriter, r *http.Request) {
 	// Expected path: /api/clients/{id}/disconnect
 	const prefix = "/api/clients/"
 	const suffix = "/disconnect"
-	if len(path) <= len(prefix)+len(suffix) {
+	if !strings.HasPrefix(path, prefix) || !strings.HasSuffix(path, suffix) || len(path) <= len(prefix)+len(suffix) {
 		http.Error(w, `{"error":"invalid path"}`, http.StatusBadRequest)
 		return
 	}
@@ -236,7 +299,7 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return sanitized config (no PSK, no bearer token)
+	// Return sanitized config (no server_key, no bearer token)
 	resp := map[string]interface{}{
 		"listen":   s.cfg.Listen,
 		"tun_ip":   s.cfg.TunIP,

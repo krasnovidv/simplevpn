@@ -15,10 +15,11 @@ import (
 // ServerConfig holds all server configuration.
 type ServerConfig struct {
 	// VPN listener
-	Listen  string `yaml:"listen"`
-	PSK     string `yaml:"psk"`
-	CertFile string `yaml:"cert"`
-	KeyFile  string `yaml:"key"`
+	Listen    string `yaml:"listen"`
+	ServerKey string `yaml:"server_key"`
+	UsersFile string `yaml:"users_file"`
+	CertFile  string `yaml:"cert"`
+	KeyFile   string `yaml:"key"`
 
 	// Transport
 	Transport TransportConfig `yaml:"transport"`
@@ -73,7 +74,8 @@ func Defaults() *ServerConfig {
 		TunIP:   "10.0.0.1/24",
 		TunName: "tun0",
 		MTU:     1380,
-		LogLevel: "info",
+		LogLevel:  "info",
+		UsersFile: "/etc/simplevpn/users.yaml",
 		API: APIConfig{
 			Listen: ":8443",
 		},
@@ -104,8 +106,11 @@ func Load(path string) (*ServerConfig, error) {
 
 // Validate checks that required fields are set and values are reasonable.
 func (c *ServerConfig) Validate() error {
-	if c.PSK == "" {
-		return fmt.Errorf("psk is required")
+	if c.ServerKey == "" {
+		return fmt.Errorf("server_key is required")
+	}
+	if c.UsersFile == "" {
+		return fmt.Errorf("users_file is required")
 	}
 	if c.Listen == "" {
 		return fmt.Errorf("listen address is required")

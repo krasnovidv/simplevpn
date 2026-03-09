@@ -1,0 +1,26 @@
+# SimpleVPN Server Configuration
+
+# VPN listener
+listen: ":443"
+server_key: "CHANGE_ME_TO_RANDOM_SECRET"
+users_file: "/etc/simplevpn/users.yaml"
+cert: "/etc/simplevpn/certs/cert.pem"
+key: "/etc/simplevpn/certs/key.pem"
+
+# TUN interface
+tun_ip: "10.0.0.1/24"
+tun_name: "tun0"
+mtu: 1380
+
+# Transport (optional)
+transport:
+  extra_listens: []
+
+# Management API
+api:
+  enabled: true
+  listen: ":8443"
+  bearer_token: "CHANGE_ME_TO_RANDOM_TOKEN"
+
+# Logging
+log_level: "info"

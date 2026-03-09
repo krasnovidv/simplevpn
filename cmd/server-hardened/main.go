@@ -5,7 +5,7 @@
 //
 // The server auto-detects incoming connections:
 //   - WebSocket upgrade → WS transport (anti-DPI)
-//   - Raw auth token → legacy TLS transport (backward compatible)
+//   - Raw credential auth → legacy TLS transport (backward compatible)
 //   - Anything else → decoy HTTP response
 //
 // # Usage
@@ -13,8 +13,8 @@
 //	# With config file:
 //	sudo ./server-hardened -config server.yaml
 //
-//	# With CLI flags (backward compatible):
-//	sudo ./server-hardened -psk "my-secret" -cert cert.pem -key key.pem
+//	# With CLI flags:
+//	sudo ./server-hardened -server-key "my-secret" -users-file users.yaml -cert cert.pem -key key.pem
 //
 //	# Mix: config file + flag overrides:
 //	sudo ./server-hardened -config server.yaml -listen :8443
@@ -22,7 +22,6 @@ package main
 
 import (
 	"flag"
-	"io"
 	"log"
 	"net"
 	"os"
@@ -31,6 +30,7 @@ import (
 	"time"
 
 	"simplevpn/pkg/api"
+	"simplevpn/pkg/auth"
 	"simplevpn/pkg/config"
 	"simplevpn/pkg/tlsdecoy"
 	"simplevpn/pkg/transport"
@@ -42,7 +42,8 @@ func main() {
 	// CLI flags
 	configFile := flag.String("config", "", "YAML config file path")
 	listenAddr := flag.String("listen", "", "TCP listen address (TLS)")
-	psk := flag.String("psk", "", "Pre-shared key")
+	serverKey := flag.String("server-key", "", "Server key for tunnel encryption")
+	usersFile := flag.String("users-file", "", "Path to users YAML file")
 	certFile := flag.String("cert", "", "TLS certificate")
 	keyFile := flag.String("key", "", "TLS private key")
 	tunIP := flag.String("tun-ip", "", "TUN interface IP (CIDR)")
@@ -67,8 +68,11 @@ func main() {
 	if *listenAddr != "" {
 		cfg.Listen = *listenAddr
 	}
-	if *psk != "" {
-		cfg.PSK = *psk
+	if *serverKey != "" {
+		cfg.ServerKey = *serverKey
+	}
+	if *usersFile != "" {
+		cfg.UsersFile = *usersFile
 	}
 	if *certFile != "" {
 		cfg.CertFile = *certFile
@@ -90,8 +94,15 @@ func main() {
 		log.Fatalf("Config validation: %v", err)
 	}
 
-	// -- Derive keys from PSK --
-	keys, err := tunnel.DeriveKeys(cfg.PSK)
+	// -- Load user store --
+	store, err := auth.NewFileStore(cfg.UsersFile)
+	if err != nil {
+		log.Fatalf("Load users: %v", err)
+	}
+	log.Printf("[server] User store loaded from %s", cfg.UsersFile)
+
+	// -- Derive keys from server key --
+	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
 	if err != nil {
 		log.Fatalf("Init crypto: %v", err)
 	}
@@ -135,13 +146,13 @@ func main() {
 		}
 		defer el.Close()
 		log.Printf("Extra listener on %s", extra)
-		go acceptLoop(el, keys, tun)
+		go acceptLoop(el, keys, store, tun)
 	}
 
 	// -- Management API --
 	var apiServer *api.Server
 	if cfg.API.Enabled {
-		apiServer = api.NewServer(cfg, "0.2.0")
+		apiServer = api.NewServer(cfg, "0.3.0", store)
 		apiServer.RegisterWebUI()
 		go func() {
 			if err := apiServer.ListenAndServeTLS(); err != nil {
@@ -164,13 +175,13 @@ func main() {
 	}()
 
 	// -- Accept loop (main listener) --
-	acceptLoop(listener, keys, tun)
+	acceptLoop(listener, keys, store, tun)
 }
 
 // activeTunnel is the channel for the current active client tunnel.
 var activeTunnel = make(chan *tunnel.Tunnel, 1)
 
-func acceptLoop(listener transport.Listener, keys *tunnel.Keys, tun *tunnel.TunDevice) {
+func acceptLoop(listener transport.Listener, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice) {
 	// Start TUN→client relay (only once for main listener)
 	go tunToClientRelay(tun)
 
@@ -181,7 +192,7 @@ func acceptLoop(listener transport.Listener, keys *tunnel.Keys, tun *tunnel.TunD
 			return
 		}
 
-		go serveConnection(conn, keys, tun)
+		go serveConnection(conn, keys, store, tun)
 	}
 }
 
@@ -220,6 +231,7 @@ func tunToClientRelay(tun *tunnel.TunDevice) {
 func serveConnection(
 	conn net.Conn,
 	keys *tunnel.Keys,
+	store *auth.FileStore,
 	tun *tunnel.TunDevice,
 ) {
 	defer conn.Close()
@@ -229,7 +241,7 @@ func serveConnection(
 	peekConn, isPeekable := conn.(*transport.PeekConn)
 	if !isPeekable {
 		log.Printf("[server] Connection from %s is not peekable, treating as raw TLS", remoteAddr)
-		serveRawAuth(conn, keys, tun, remoteAddr)
+		serveRawAuth(conn, keys, store, tun, remoteAddr)
 		return
 	}
 
@@ -245,15 +257,15 @@ func serveConnection(
 
 	if transport.IsWebSocketUpgrade(peeked) {
 		log.Printf("[server] WebSocket upgrade detected from %s (peeked=%x)", remoteAddr, peeked)
-		serveWebSocket(peekConn, keys, tun, remoteAddr)
+		serveWebSocket(peekConn, keys, store, tun, remoteAddr)
 	} else {
 		log.Printf("[server] Raw TLS auth detected from %s (peeked=%x)", remoteAddr, peeked)
-		serveRawAuth(peekConn, keys, tun, remoteAddr)
+		serveRawAuth(peekConn, keys, store, tun, remoteAddr)
 	}
 }
 
 // serveWebSocket handles a WebSocket client connection.
-func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, tun *tunnel.TunDevice, remoteAddr string) {
+func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
 	// PeekConn.Read() transparently replays peeked bytes,
 	// so ServerUpgrade reads the full HTTP request from it.
 	wsConn, err := ws.ServerUpgrade(conn, nil)
@@ -265,34 +277,32 @@ func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, tun *tunnel.Tun
 	log.Printf("[server] WebSocket established with %s", remoteAddr)
 
 	// Now authenticate over WebSocket
-	serveAuth(wsConn, keys, tun, remoteAddr)
+	serveAuth(wsConn, keys, store, tun, remoteAddr)
 }
 
-// serveRawAuth handles raw TLS auth (legacy protocol).
-func serveRawAuth(conn net.Conn, keys *tunnel.Keys, tun *tunnel.TunDevice, remoteAddr string) {
-	serveAuth(conn, keys, tun, remoteAddr)
+// serveRawAuth handles raw TLS auth.
+func serveRawAuth(conn net.Conn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
+	serveAuth(conn, keys, store, tun, remoteAddr)
 }
 
-// serveAuth performs VPN authentication and starts the tunnel.
+// serveAuth performs VPN authentication via credentials and starts the tunnel.
 // Works with both raw TLS and WebSocket connections.
-func serveAuth(conn net.Conn, keys *tunnel.Keys, tun *tunnel.TunDevice, remoteAddr string) {
-	// Read auth token (56 bytes)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	authBuf := make([]byte, tlsdecoy.AuthTokenSize)
-	if _, err := io.ReadFull(conn, authBuf); err != nil {
-		log.Printf("[server] Auth timeout from %s: %v -> decoy mode", remoteAddr, err)
-		serveDecoy(conn)
-		return
-	}
-	conn.SetReadDeadline(time.Time{})
-
-	if !tlsdecoy.VerifyAuthToken(keys.Master, authBuf) {
-		log.Printf("[server] Auth FAILED from %s -> decoy mode", remoteAddr)
+func serveAuth(conn net.Conn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
+	// Read credential frame (version 0x02 + username + password)
+	username, password, err := tlsdecoy.ReadCredAuth(conn)
+	if err != nil {
+		log.Printf("[server] Credential read failed from %s: %v -> decoy mode", remoteAddr, err)
 		serveDecoy(conn)
 		return
 	}
 
-	log.Printf("[server] VPN client authenticated: %s", remoteAddr)
+	if !store.Authenticate(username, password) {
+		log.Printf("[server] Auth FAILED for user %q from %s -> decoy mode", username, remoteAddr)
+		serveDecoy(conn)
+		return
+	}
+
+	log.Printf("[server] VPN client authenticated: user=%q addr=%s", username, remoteAddr)
 	conn.Write([]byte("OK"))
 
 	tun2 := tunnel.New(keys, conn)
@@ -302,7 +312,7 @@ func serveAuth(conn net.Conn, keys *tunnel.Keys, tun *tunnel.TunDevice, remoteAd
 	for {
 		plaintext, err := tun2.Recv()
 		if err != nil {
-			log.Printf("[server] Client %s disconnected: %v", remoteAddr, err)
+			log.Printf("[server] Client %s (user=%q) disconnected: %v", remoteAddr, username, err)
 			return
 		}
 

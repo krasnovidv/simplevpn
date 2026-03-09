@@ -1,0 +1,4 @@
+# SimpleVPN Users File
+# Passwords are stored as bcrypt hashes.
+# Use the API or CLI to manage users — do not edit hashes manually.
+users: []

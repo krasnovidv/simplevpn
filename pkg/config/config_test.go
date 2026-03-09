@@ -24,12 +24,16 @@ func TestDefaults(t *testing.T) {
 	if cfg.API.Listen != ":8443" {
 		t.Errorf("API.Listen: got %q, want %q", cfg.API.Listen, ":8443")
 	}
+	if cfg.UsersFile != "/etc/simplevpn/users.yaml" {
+		t.Errorf("UsersFile: got %q, want %q", cfg.UsersFile, "/etc/simplevpn/users.yaml")
+	}
 }
 
 func TestLoadYAML(t *testing.T) {
 	yaml := `
 listen: ":8080"
-psk: "my-secret"
+server_key: "my-secret-key"
+users_file: "/data/users.yaml"
 cert: "/path/to/cert.pem"
 key: "/path/to/key.pem"
 tun_ip: "10.1.0.1/24"
@@ -55,8 +59,11 @@ api:
 	if cfg.Listen != ":8080" {
 		t.Errorf("Listen: got %q, want %q", cfg.Listen, ":8080")
 	}
-	if cfg.PSK != "my-secret" {
-		t.Errorf("PSK: got %q, want %q", cfg.PSK, "my-secret")
+	if cfg.ServerKey != "my-secret-key" {
+		t.Errorf("ServerKey: got %q, want %q", cfg.ServerKey, "my-secret-key")
+	}
+	if cfg.UsersFile != "/data/users.yaml" {
+		t.Errorf("UsersFile: got %q, want %q", cfg.UsersFile, "/data/users.yaml")
 	}
 	if cfg.MTU != 1400 {
 		t.Errorf("MTU: got %d, want %d", cfg.MTU, 1400)
@@ -78,7 +85,7 @@ api:
 func TestLoadPartialYAML(t *testing.T) {
 	// Only set some fields — defaults should fill the rest
 	yaml := `
-psk: "test"
+server_key: "test-key"
 cert: "cert.pem"
 key: "key.pem"
 `
@@ -98,8 +105,8 @@ key: "key.pem"
 	if cfg.MTU != 1380 {
 		t.Errorf("MTU should default to 1380, got %d", cfg.MTU)
 	}
-	if cfg.PSK != "test" {
-		t.Errorf("PSK: got %q, want %q", cfg.PSK, "test")
+	if cfg.ServerKey != "test-key" {
+		t.Errorf("ServerKey: got %q, want %q", cfg.ServerKey, "test-key")
 	}
 }
 
@@ -112,19 +119,27 @@ func TestValidate(t *testing.T) {
 		{
 			name: "valid config",
 			modify: func(c *ServerConfig) {
-				c.PSK = "test"
+				c.ServerKey = "test-key"
 			},
 			wantErr: false,
 		},
 		{
-			name:    "missing PSK",
+			name:    "missing server_key",
 			modify:  func(c *ServerConfig) {},
+			wantErr: true,
+		},
+		{
+			name: "missing users_file",
+			modify: func(c *ServerConfig) {
+				c.ServerKey = "test-key"
+				c.UsersFile = ""
+			},
 			wantErr: true,
 		},
 		{
 			name: "MTU too low",
 			modify: func(c *ServerConfig) {
-				c.PSK = "test"
+				c.ServerKey = "test-key"
 				c.MTU = 100
 			},
 			wantErr: true,
@@ -132,7 +147,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "MTU too high",
 			modify: func(c *ServerConfig) {
-				c.PSK = "test"
+				c.ServerKey = "test-key"
 				c.MTU = 10000
 			},
 			wantErr: true,
@@ -140,7 +155,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "API enabled without token",
 			modify: func(c *ServerConfig) {
-				c.PSK = "test"
+				c.ServerKey = "test-key"
 				c.API.Enabled = true
 			},
 			wantErr: true,
@@ -148,7 +163,7 @@ func TestValidate(t *testing.T) {
 		{
 			name: "API enabled with token",
 			modify: func(c *ServerConfig) {
-				c.PSK = "test"
+				c.ServerKey = "test-key"
 				c.API.Enabled = true
 				c.API.BearerToken = "secret"
 			},

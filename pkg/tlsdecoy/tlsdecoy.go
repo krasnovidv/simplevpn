@@ -10,107 +10,162 @@
 // # Решение
 //
 // Наш сервер слушает на порту 443 и ведёт себя как настоящий HTTPS-сервер.
-// Любой запрос, не содержащий правильного VPN-токена аутентификации,
+// Любой запрос, не содержащий правильных credentials,
 // получает реальный HTML-ответ (404 страница, redirect и т.д.).
 //
-// Только клиент, знающий PSK, может доказать серверу свою подлинность
-// и получить VPN-соединение. Это называется "port knocking" через TLS.
+// Только клиент с валидным логином/паролем может авторизоваться
+// и получить VPN-соединение.
 //
-// # Протокол аутентификации
+// # Протокол аутентификации (v2 — credentials)
 //
 // Клиент в первом TLS-сообщении после handshake отправляет:
 //
-//	[HMAC-SHA256(PSK, "vpn-auth" || timestamp || nonce)]  (32 байта)
-//	[timestamp uint64 big-endian]                          (8 байт)
-//	[nonce random]                                         (16 байт)
+//	[1 byte: version = 0x02]
+//	[1 byte: username_len]
+//	[N bytes: username (UTF-8)]
+//	[2 bytes: password_len (big-endian)]
+//	[N bytes: password (UTF-8)]
 //
-// Сервер проверяет HMAC и timestamp (допуск ±5 минут против replay).
+// Сервер проверяет credentials через UserStore (bcrypt).
 // Если проверка провалилась — отвечает как обычный веб-сервер и закрывает соединение.
 package tlsdecoy
 
 import (
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"time"
 )
 
 const (
-	AuthTokenSize = 32 + 8 + 16 // HMAC + timestamp + nonce
-	TimeTolerance = 5 * time.Minute
+	CredAuthVersion = 0x02
+	MaxUsernameLen  = 255
+	MaxPasswordLen  = 1024
+	AuthReadTimeout = 10 * time.Second
 )
 
-// AuthToken — токен аутентификации клиента.
-type AuthToken struct {
-	HMAC      [32]byte
-	Timestamp uint64
-	Nonce     [16]byte
+// GenerateCredAuth создаёт credential frame для отправки серверу.
+// Формат: [version 1B][username_len 1B][username][password_len 2B][password]
+func GenerateCredAuth(username, password string) ([]byte, error) {
+	if len(username) == 0 || len(username) > MaxUsernameLen {
+		return nil, fmt.Errorf("username length must be 1-%d, got %d", MaxUsernameLen, len(username))
+	}
+	if len(password) == 0 || len(password) > MaxPasswordLen {
+		return nil, fmt.Errorf("password length must be 1-%d, got %d", MaxPasswordLen, len(password))
+	}
+
+	size := 1 + 1 + len(username) + 2 + len(password)
+	buf := make([]byte, size)
+	offset := 0
+
+	buf[offset] = CredAuthVersion
+	offset++
+
+	buf[offset] = byte(len(username))
+	offset++
+
+	copy(buf[offset:], username)
+	offset += len(username)
+
+	binary.BigEndian.PutUint16(buf[offset:], uint16(len(password)))
+	offset += 2
+
+	copy(buf[offset:], password)
+
+	log.Printf("[tlsdecoy] generated credential frame for user %q (%d bytes)", username, size)
+	return buf, nil
 }
 
-// GenerateAuthToken создаёт токен аутентификации из PSK.
-// Клиент отправляет его сразу после TLS handshake.
-func GenerateAuthToken(psk [32]byte) (*AuthToken, []byte, error) {
-	tok := &AuthToken{
-		Timestamp: uint64(time.Now().Unix()),
+// ParseCredAuth парсит credential frame и возвращает username, password.
+func ParseCredAuth(data []byte) (username, password string, err error) {
+	if len(data) < 4 {
+		return "", "", fmt.Errorf("credential frame too short: %d bytes", len(data))
 	}
 
-	if _, err := io.ReadFull(rand.Reader, tok.Nonce[:]); err != nil {
-		return nil, nil, fmt.Errorf("generate nonce: %w", err)
+	if data[0] != CredAuthVersion {
+		return "", "", fmt.Errorf("unsupported auth version: 0x%02x (expected 0x%02x)", data[0], CredAuthVersion)
 	}
 
-	tok.HMAC = computeHMAC(psk, tok.Timestamp, tok.Nonce)
+	usernameLen := int(data[1])
+	if usernameLen == 0 || usernameLen > MaxUsernameLen {
+		return "", "", fmt.Errorf("invalid username length: %d", usernameLen)
+	}
 
-	// Сериализуем
-	buf := make([]byte, AuthTokenSize)
-	copy(buf[:32], tok.HMAC[:])
-	binary.BigEndian.PutUint64(buf[32:40], tok.Timestamp)
-	copy(buf[40:], tok.Nonce[:])
+	if len(data) < 2+usernameLen+2 {
+		return "", "", fmt.Errorf("credential frame truncated: need %d bytes for username, have %d", 2+usernameLen+2, len(data))
+	}
 
-	return tok, buf, nil
+	username = string(data[2 : 2+usernameLen])
+
+	passwordLen := int(binary.BigEndian.Uint16(data[2+usernameLen : 4+usernameLen]))
+	if passwordLen == 0 || passwordLen > MaxPasswordLen {
+		return "", "", fmt.Errorf("invalid password length: %d", passwordLen)
+	}
+
+	if len(data) < 4+usernameLen+passwordLen {
+		return "", "", fmt.Errorf("credential frame truncated: need %d bytes for password, have %d", 4+usernameLen+passwordLen, len(data))
+	}
+
+	password = string(data[4+usernameLen : 4+usernameLen+passwordLen])
+
+	log.Printf("[tlsdecoy] parsed credential frame: user=%q", username)
+	return username, password, nil
 }
 
-// VerifyAuthToken проверяет токен аутентификации на сервере.
-func VerifyAuthToken(psk [32]byte, data []byte) bool {
-	if len(data) < AuthTokenSize {
-		return false
+// ReadCredAuth reads a credential frame from a connection with a timeout.
+func ReadCredAuth(conn net.Conn) (username, password string, err error) {
+	if err := conn.SetReadDeadline(time.Now().Add(AuthReadTimeout)); err != nil {
+		return "", "", fmt.Errorf("set read deadline: %w", err)
+	}
+	defer conn.SetReadDeadline(time.Time{})
+
+	// Read version + username_len (2 bytes)
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return "", "", fmt.Errorf("read auth header: %w", err)
 	}
 
-	var tok AuthToken
-	copy(tok.HMAC[:], data[:32])
-	tok.Timestamp = binary.BigEndian.Uint64(data[32:40])
-	copy(tok.Nonce[:], data[40:56])
-
-	// Проверяем временну́ю метку (защита от replay)
-	now := uint64(time.Now().Unix())
-	diff := int64(now) - int64(tok.Timestamp)
-	if diff < 0 {
-		diff = -diff
-	}
-	if diff > int64(TimeTolerance.Seconds()) {
-		return false
+	if header[0] != CredAuthVersion {
+		return "", "", fmt.Errorf("unsupported auth version: 0x%02x", header[0])
 	}
 
-	// Проверяем HMAC
-	expected := computeHMAC(psk, tok.Timestamp, tok.Nonce)
-	return hmac.Equal(tok.HMAC[:], expected[:])
-}
+	usernameLen := int(header[1])
+	if usernameLen == 0 || usernameLen > MaxUsernameLen {
+		return "", "", fmt.Errorf("invalid username length: %d", usernameLen)
+	}
 
-// computeHMAC вычисляет HMAC-SHA256(psk, "vpn-auth" || timestamp || nonce).
-func computeHMAC(psk [32]byte, timestamp uint64, nonce [16]byte) [32]byte {
-	h := hmac.New(sha256.New, psk[:])
-	h.Write([]byte("vpn-auth"))
-	var tsBuf [8]byte
-	binary.BigEndian.PutUint64(tsBuf[:], timestamp)
-	h.Write(tsBuf[:])
-	h.Write(nonce[:])
-	var result [32]byte
-	copy(result[:], h.Sum(nil))
-	return result
+	// Read username + password_len
+	userAndPwdLen := make([]byte, usernameLen+2)
+	if _, err := io.ReadFull(conn, userAndPwdLen); err != nil {
+		return "", "", fmt.Errorf("read username+password_len: %w", err)
+	}
+
+	username = string(userAndPwdLen[:usernameLen])
+	passwordLen := int(binary.BigEndian.Uint16(userAndPwdLen[usernameLen:]))
+	if passwordLen == 0 || passwordLen > MaxPasswordLen {
+		return "", "", fmt.Errorf("invalid password length: %d", passwordLen)
+	}
+
+	// Guard against oversized frames
+	totalSize := 2 + usernameLen + 2 + passwordLen
+	if totalSize > 4+MaxUsernameLen+2+MaxPasswordLen {
+		return "", "", fmt.Errorf("credential frame too large: %d bytes", totalSize)
+	}
+
+	// Read password
+	pwdBuf := make([]byte, passwordLen)
+	if _, err := io.ReadFull(conn, pwdBuf); err != nil {
+		return "", "", fmt.Errorf("read password: %w", err)
+	}
+
+	password = string(pwdBuf)
+
+	log.Printf("[tlsdecoy] read credential frame from %s: user=%q", conn.RemoteAddr(), username)
+	return username, password, nil
 }
 
 // DecoyHandler возвращает HTTP handler, имитирующий обычный веб-сервер.
