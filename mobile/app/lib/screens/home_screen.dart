@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
 import '../services/event_log.dart';
@@ -21,12 +22,14 @@ class _HomeScreenState extends State<HomeScreen> {
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
     _vpnService.addListener(_onStatusChanged);
     _loadConfig();
+    _loadAppVersion();
     _vpnService.checkInitialStatus();
     _log.info('App started');
   }
@@ -43,6 +46,14 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _config = config;
       _loading = false;
+    });
+  }
+
+  Future<void> _loadAppVersion() async {
+    final info = await PackageInfo.fromPlatform();
+    _log.debug('App version: ${info.version}+${info.buildNumber}');
+    setState(() {
+      _appVersion = 'v${info.version} (${info.buildNumber})';
     });
   }
 
@@ -82,7 +93,9 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: _loading
+      body: Stack(
+        children: [
+          _loading
           ? const Center(child: CircularProgressIndicator())
           : Center(
               child: Padding(
@@ -189,6 +202,20 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
             ),
+          if (_appVersion.isNotEmpty)
+            Positioned(
+              left: 16,
+              bottom: 16,
+              child: Opacity(
+                opacity: 0.5,
+                child: Text(
+                  _appVersion,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
