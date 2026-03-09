@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../services/config_storage.dart';
 import '../models/vpn_config.dart';
+import '../utils/validators.dart';
 import 'qr_scanner_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -23,6 +24,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _autoReconnect = false;
   bool _killSwitch = false;
   bool _loaded = false;
+  String? _serverError;
 
   @override
   void initState() {
@@ -79,11 +81,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           TextField(
             controller: _serverCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Server (host:port)',
-              hintText: 'vpn.example.com:443',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              labelText: 'Server (ip:port)',
+              hintText: '192.168.1.1:443',
+              border: const OutlineInputBorder(),
+              errorText: _serverError,
             ),
+            onChanged: (v) {
+              setState(() {
+                _serverError = v.isEmpty ? null : validateServerAddress(v);
+              });
+            },
           ),
           const SizedBox(height: 12),
 

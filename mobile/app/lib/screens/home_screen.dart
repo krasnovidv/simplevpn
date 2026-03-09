@@ -4,6 +4,7 @@ import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
+import '../utils/validators.dart';
 import 'settings_screen.dart';
 import 'log_screen.dart';
 
@@ -58,11 +59,11 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String? _validateConfig(VpnConfig config) {
-    if (config.server.isEmpty) return 'Server address is empty';
+    final serverError = validateServerAddress(config.server);
+    if (serverError != null) return serverError;
     if (config.serverKey.isEmpty) return 'Server key is empty';
     if (config.username.isEmpty) return 'Username is empty';
     if (config.password.isEmpty) return 'Password is empty';
-    if (!config.server.contains(':')) return 'Server must include port (host:port)';
     return null;
   }
 
@@ -222,7 +223,9 @@ class _HomeScreenState extends State<HomeScreen> {
   bool get _canToggle =>
       _config != null &&
       !_actionInProgress &&
-      _status != VpnStatus.connecting;
+      _status != VpnStatus.connecting &&
+      (_status == VpnStatus.connected ||
+          validateServerAddress(_config!.server) == null);
 
   String get _buttonText => switch (_status) {
         VpnStatus.connected => 'Disconnect',
