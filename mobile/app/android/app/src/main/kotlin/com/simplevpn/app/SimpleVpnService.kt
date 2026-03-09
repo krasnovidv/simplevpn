@@ -72,8 +72,19 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
     }
 
     private fun connect(config: String) {
+        // Guard: don't re-establish if Go side is already connected.
+        // Re-calling builder.establish() invalidates the old TUN fd and kills the tunnel.
+        val goStatus = try { Vpnlib.status() } catch (_: Exception) { null }
+        if (goStatus == "connected" || goStatus == "connecting") {
+            Log.i(TAG, "connect() called but Go is already $goStatus — skipping")
+            currentStatus = goStatus
+            return
+        }
+
+        // Disconnect any stale Go-side connection before starting a new one
+        try { Vpnlib.disconnect() } catch (_: Exception) {}
+
         currentStatus = "connecting"
-        // Log config safely (mask PSK)
         val configPreview = if (config.length > 100) config.take(100) + "..." else config
         Log.i(TAG, "Starting VPN connection, config length=${config.length}")
         Log.d(TAG, "Config preview (may contain masked data): $configPreview")
@@ -148,7 +159,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             updateNotification("Connecting...")
             reconnectAttempt = 0 // Reset backoff on new connection attempt
 
-            if (autoReconnect) {
+            if (autoReconnect && networkCallback == null) {
                 setupNetworkMonitoring()
             }
         } catch (e: Exception) {
@@ -180,30 +191,44 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         stopSelf()
     }
 
+    private fun isGoConnected(): Boolean {
+        val goStatus = try { Vpnlib.status() } catch (_: Exception) { null }
+        return goStatus == "connected" || goStatus == "connecting"
+    }
+
     private fun setupNetworkMonitoring() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.i(TAG, "Network available, checking VPN status")
-                if (currentStatus != "connected" && configJson != null) {
+                // Always check Go-side status — Kotlin currentStatus may be stale
+                if (!isGoConnected() && configJson != null) {
                     val delay = calculateBackoff()
                     Log.i(TAG, "Auto-reconnecting in ${delay}ms (attempt $reconnectAttempt)")
                     updateNotification("Reconnecting in ${delay / 1000}s...")
                     Thread {
                         Thread.sleep(delay)
-                        if (currentStatus != "connected" && configJson != null) {
+                        if (!isGoConnected() && configJson != null) {
                             reconnectAttempt++
                             connect(configJson!!)
                         }
                     }.start()
+                } else {
+                    Log.i(TAG, "Network available but VPN still active — no reconnect needed")
                 }
             }
 
             override fun onLost(network: Network) {
-                Log.i(TAG, "Network lost")
-                currentStatus = "disconnected"
-                updateNotification("Waiting for network...")
+                Log.i(TAG, "Network lost, checking Go-side VPN status")
+                // Don't blindly set disconnected — the VPN tunnel may still be alive.
+                // VPN establishment itself triggers onLost for the physical network.
+                if (!isGoConnected()) {
+                    currentStatus = "disconnected"
+                    updateNotification("Waiting for network...")
+                } else {
+                    Log.i(TAG, "Network lost but Go tunnel still active — ignoring")
+                }
             }
         }
 
@@ -219,9 +244,13 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
     private fun removeNetworkMonitoring() {
         networkCallback?.let {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            cm.unregisterNetworkCallback(it)
             networkCallback = null
+            try {
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.unregisterNetworkCallback(it)
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "NetworkCallback was not registered, ignoring")
+            }
         }
     }
 
