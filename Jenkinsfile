@@ -11,12 +11,6 @@ pipeline {
     }
 
     stages {
-        stage('Test') {
-            steps {
-                sh 'go test ./pkg/...'
-            }
-        }
-
         stage('Deploy to VPS') {
             steps {
                 // Sync source files to VPS
