@@ -32,6 +32,7 @@ mobile/app/ios/.symlinks/
 # AI tooling
 .claude/
 .ai-factory/
+.ai-factory.json
 
 # IDE
 .idea/
