@@ -9,8 +9,11 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.util.concurrent.atomic.AtomicBoolean
 import vpnlib.Vpnlib
 
 class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
@@ -39,6 +42,11 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var reconnectAttempt: Int = 0
     private val maxReconnectDelay: Long = 60_000 // 60 seconds max
+
+    // [FIX] Prevent concurrent connect() calls and debounce network callbacks
+    private val isConnecting = AtomicBoolean(false)
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var pendingReconnect: Runnable? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -72,12 +80,19 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
     }
 
     private fun connect(config: String) {
+        // [FIX] Prevent concurrent connect() calls using AtomicBoolean
+        if (!isConnecting.compareAndSet(false, true)) {
+            Log.i(TAG, "[FIX] connect() called but another connect is in progress — skipping")
+            return
+        }
+
         // Guard: don't re-establish if Go side is already connected.
         // Re-calling builder.establish() invalidates the old TUN fd and kills the tunnel.
         val goStatus = try { Vpnlib.status() } catch (_: Exception) { null }
         if (goStatus == "connected" || goStatus == "connecting") {
             Log.i(TAG, "connect() called but Go is already $goStatus — skipping")
             currentStatus = goStatus
+            isConnecting.set(false)
             return
         }
 
@@ -133,6 +148,10 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                     Log.e(TAG, "Vpnlib.connect() error: ${e.message}", e)
                     currentStatus = "error: ${e.message}"
                 } finally {
+                    // [FIX] Release connect lock so future connects can proceed
+                    isConnecting.set(false)
+                    Log.d(TAG, "[FIX] isConnecting released")
+
                     Log.d(TAG, "Connect thread finished, cleaning up (killSwitch=$killSwitch)")
                     if (killSwitch) {
                         // Keep TUN open to block all traffic (kill switch)
@@ -165,6 +184,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         } catch (e: Exception) {
             Log.e(TAG, "VPN connect failed: ${e.message}", e)
             currentStatus = "error: ${e.message}"
+            isConnecting.set(false)
             disconnect()
         }
     }
@@ -201,22 +221,28 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                Log.i(TAG, "Network available, checking VPN status")
-                // Always check Go-side status — Kotlin currentStatus may be stale
-                if (!isGoConnected() && configJson != null) {
-                    val delay = calculateBackoff()
-                    Log.i(TAG, "Auto-reconnecting in ${delay}ms (attempt $reconnectAttempt)")
-                    updateNotification("Reconnecting in ${delay / 1000}s...")
-                    Thread {
-                        Thread.sleep(delay)
-                        if (!isGoConnected() && configJson != null) {
-                            reconnectAttempt++
-                            connect(configJson!!)
-                        }
-                    }.start()
-                } else {
-                    Log.i(TAG, "Network available but VPN still active — no reconnect needed")
+                Log.i(TAG, "[FIX] Network available, debouncing reconnect check")
+                // [FIX] Debounce: cancel any pending reconnect and schedule a new one after 500ms
+                // This prevents flood of reconnects during rapid network changes (WiFi↔cellular)
+                pendingReconnect?.let { reconnectHandler.removeCallbacks(it) }
+                pendingReconnect = Runnable {
+                    Log.i(TAG, "[FIX] Debounced reconnect check executing")
+                    if (!isGoConnected() && configJson != null) {
+                        val delay = calculateBackoff()
+                        Log.i(TAG, "Auto-reconnecting in ${delay}ms (attempt $reconnectAttempt)")
+                        updateNotification("Reconnecting in ${delay / 1000}s...")
+                        // [FIX] Use handler.postDelayed instead of spawning threads
+                        reconnectHandler.postDelayed({
+                            if (!isGoConnected() && configJson != null) {
+                                reconnectAttempt++
+                                connect(configJson!!)
+                            }
+                        }, delay)
+                    } else {
+                        Log.i(TAG, "Network available but VPN still active — no reconnect needed")
+                    }
                 }
+                reconnectHandler.postDelayed(pendingReconnect!!, 500)
             }
 
             override fun onLost(network: Network) {
@@ -243,6 +269,11 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
     }
 
     private fun removeNetworkMonitoring() {
+        // [FIX] Cancel any pending debounced reconnect
+        pendingReconnect?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectHandler.removeCallbacksAndMessages(null)
+        pendingReconnect = null
+
         networkCallback?.let {
             networkCallback = null
             try {

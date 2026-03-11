@@ -1,0 +1,42 @@
+{
+  "run_id": "vpn-production-ready-20260309-084755",
+  "task_alias": "vpn-production-ready",
+  "status": "completed",
+  "iteration": 3,
+  "max_iterations": 4,
+  "phase": "B",
+  "current_step": "DONE",
+  "task": {
+    "prompt": "Production Readiness Playbook for SimpleVPN — make server and mobile client easy to build and run.",
+    "ideal_result": "A single comprehensive document that lets anyone deploy the server with one command (Docker), build the mobile app (AAR + APK) with one command, configure everything with clear defaults and examples, and understand what each step does."
+  },
+  "criteria": {
+    "name": "documentation_v1",
+    "version": 1,
+    "phase": {
+      "A": { "threshold": 0.75, "active_levels": ["A"] },
+      "B": { "threshold": 0.85, "active_levels": ["A", "B"] }
+    },
+    "rules": [
+      {"id": "a.correctness.accuracy", "severity": "fail", "weight": 2, "phase": "A"},
+      {"id": "a.completeness.server-deploy", "severity": "fail", "weight": 2, "phase": "A"},
+      {"id": "a.completeness.mobile-build", "severity": "fail", "weight": 2, "phase": "A"},
+      {"id": "a.completeness.config-examples", "severity": "fail", "weight": 2, "phase": "A"},
+      {"id": "a.quality.clarity", "severity": "warn", "weight": 1, "phase": "A"},
+      {"id": "b.completeness.troubleshooting", "severity": "warn", "weight": 1, "phase": "B"},
+      {"id": "b.completeness.prereqs", "severity": "warn", "weight": 1, "phase": "B"},
+      {"id": "b.quality.structure", "severity": "warn", "weight": 1, "phase": "B"},
+      {"id": "b.style.consistency", "severity": "warn", "weight": 1, "phase": "B"},
+      {"id": "b.completeness.one-liner", "severity": "fail", "weight": 2, "phase": "B"}
+    ]
+  },
+  "plan": [],
+  "prepared_checks": null,
+  "evaluation": {"score": 1.0, "passed": true, "failed": [], "warnings": []},
+  "critique": null,
+  "stop": { "passed": true, "reason": "threshold_reached" },
+  "last_score": 1.0,
+  "stagnation_count": 0,
+  "created_at": "2026-03-09T08:47:55Z",
+  "updated_at": "2026-03-09T08:58:00Z"
+}

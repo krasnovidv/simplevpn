@@ -1,24 +1,43 @@
 import 'dart:async';
 import 'package:flutter/services.dart';
+import 'package:flutter/widgets.dart';
 import 'event_log.dart';
 
 enum VpnStatus { disconnected, connecting, connected, error }
 
-class VpnService {
+class VpnService with WidgetsBindingObserver {
   static const _channel = MethodChannel('com.simplevpn/vpn');
-  static const _pollInterval = Duration(seconds: 2);
+  static const _pollInterval = Duration(seconds: 5);
 
   final _log = EventLog();
   VpnStatus _status = VpnStatus.disconnected;
   String? _errorMessage;
   final List<void Function(VpnStatus)> _listeners = [];
   Timer? _pollTimer;
+  bool _wasPolling = false;
 
   VpnStatus get status => _status;
   String? get errorMessage => _errorMessage;
 
   VpnService() {
     _channel.setMethodCallHandler(_handlePlatformCall);
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  // [FIX] Pause polling when app is backgrounded, resume when foregrounded
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
+      _log.debug('[FIX] App backgrounded, pausing status polling');
+      _wasPolling = _pollTimer != null;
+      _stopPolling();
+    } else if (state == AppLifecycleState.resumed) {
+      _log.debug('[FIX] App resumed, restoring polling=$_wasPolling');
+      if (_wasPolling) {
+        _startPolling();
+        _pollStatus(); // Immediate poll to sync UI
+      }
+    }
   }
 
   /// Check native VPN status on startup to sync UI with already-running tunnel.
@@ -212,5 +231,6 @@ class VpnService {
 
   void dispose() {
     _stopPolling();
+    WidgetsBinding.instance.removeObserver(this);
   }
 }

@@ -1,0 +1,46 @@
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+server-hardened
+client-hardened
+
+# APK builds
+apks/
+
+# Go
+vendor/
+
+# Flutter
+mobile/app/build/
+mobile/app/.dart_tool/
+mobile/app/.packages
+
+# Android
+mobile/app/android/.kotlin/
+mobile/app/android/app/.cxx/
+mobile/app/android/local.properties
+mobile/app/android/.gradle/
+*.apk
+
+# iOS
+mobile/app/ios/Flutter/
+mobile/app/ios/Pods/
+mobile/app/ios/.symlinks/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / config
+*.pem
+*.key
+config.yaml

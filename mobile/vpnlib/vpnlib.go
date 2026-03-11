@@ -128,6 +128,10 @@ type state struct {
 
 var current = &state{status: "disconnected"}
 
+// connectMu prevents concurrent Connect() calls from racing.
+// This is separate from current.mu to avoid holding the state lock during the entire connection.
+var connectMu sync.Mutex
+
 // defaultTransport returns the default transport type for the current platform.
 func defaultTransport() transport.Type {
 	return transport.TypeWS
@@ -147,9 +151,15 @@ func defaultFingerprint() transport.FingerprintProfile {
 //
 // This function blocks until the connection is closed or Disconnect() is called.
 func Connect(configJSON string, fd int) error {
+	// [FIX] Prevent concurrent Connect() calls from racing
+	connectMu.Lock()
+	defer connectMu.Unlock()
+	log.Printf("[FIX] Connect mutex acquired")
+
 	current.mu.Lock()
 	if current.connected {
 		current.mu.Unlock()
+		log.Printf("[FIX] Connect called but already connected — skipping")
 		return fmt.Errorf("already connected")
 	}
 	current.status = "connecting"
@@ -339,7 +349,18 @@ func Connect(configJSON string, fd int) error {
 	tun := tunnel.New(keys, conn)
 
 	// TUN → Transport (send)
+	// [FIX] tunReaderDone signals when the goroutine exits, so cleanup waits for it
+	tunReaderDone := make(chan struct{})
 	go func() {
+		defer close(tunReaderDone)
+		// [FIX] Panic recovery — prevent native crash from killing the Go runtime
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[FIX] Panic in TUN→Transport goroutine: %v", r)
+				setStatus("error: tun reader panic")
+			}
+		}()
+
 		buf := make([]byte, tunnel.MaxFrameSize)
 		var sendCount int64
 		log.Printf("[vpnlib] TUN→Transport goroutine started, reading from TUN fd=%d", fd)
@@ -417,6 +438,15 @@ func Disconnect() {
 	log.Printf("[vpnlib] Disconnect called, closing connection...")
 
 	close(current.stopCh)
+
+	// [FIX] Close tunFile to unblock any goroutine stuck in tunFile.Read()
+	// This must happen BEFORE conn.Close() so the TUN reader goroutine exits cleanly.
+	if current.tunFile != nil {
+		log.Printf("[FIX] Closing TUN file to unblock reader goroutine")
+		current.tunFile.Close()
+		current.tunFile = nil
+	}
+
 	if current.conn != nil {
 		current.conn.Close()
 		log.Printf("[vpnlib] Connection closed")
@@ -445,6 +475,12 @@ func cleanup(conn net.Conn, tunFile *os.File) {
 	defer current.mu.Unlock()
 	if conn != nil {
 		conn.Close()
+	}
+	// [FIX] Close tunFile to prevent fd leak and unblock TUN reader goroutine
+	if tunFile != nil && current.tunFile != nil {
+		log.Printf("[FIX] Closing TUN file in cleanup")
+		tunFile.Close()
+		current.tunFile = nil
 	}
 	current.connected = false
 	current.status = "disconnected"
