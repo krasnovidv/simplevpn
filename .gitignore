@@ -29,6 +29,10 @@ mobile/app/ios/Flutter/
 mobile/app/ios/Pods/
 mobile/app/ios/.symlinks/
 
+# AI tooling
+.claude/
+.ai-factory/
+
 # IDE
 .idea/
 .vscode/
