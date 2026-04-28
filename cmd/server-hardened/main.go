@@ -1,4 +1,4 @@
-// Hardened VPN Server — DPI-resistant
+// Hardened VPN Server — DPI-resistant, multi-client
 //
 // Supports configuration via YAML file and/or CLI flags.
 // CLI flags override config file values.
@@ -22,21 +22,31 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"simplevpn/pkg/api"
 	"simplevpn/pkg/auth"
 	"simplevpn/pkg/config"
+	"simplevpn/pkg/ippool"
 	"simplevpn/pkg/tlsdecoy"
 	"simplevpn/pkg/transport"
 	"simplevpn/pkg/transport/ws"
 	"simplevpn/pkg/tunnel"
 )
+
+// clientSession holds the active tunnel for a connected client.
+type clientSession struct {
+	tun      *tunnel.Tunnel
+	username string
+}
 
 func main() {
 	// CLI flags
@@ -109,12 +119,26 @@ func main() {
 	log.Println("Crypto initialized")
 
 	// -- TUN interface --
-	tun, err := tunnel.CreateTUN(cfg.TunName, cfg.TunIP, cfg.MTU)
+	tunDev, err := tunnel.CreateTUN(cfg.TunName, cfg.TunIP, cfg.MTU)
 	if err != nil {
 		log.Fatalf("Create TUN: %v", err)
 	}
-	defer tun.Close()
+	defer tunDev.Close()
 	log.Printf("TUN %s up: %s", cfg.TunName, cfg.TunIP)
+
+	// -- IP pool for client address assignment --
+	tunPrefix, err := netip.ParsePrefix(cfg.TunIP)
+	if err != nil {
+		log.Fatalf("Parse tun_ip: %v", err)
+	}
+	pool, err := ippool.New(cfg.ClientSubnet, tunPrefix.Addr())
+	if err != nil {
+		log.Fatalf("IP pool: %v", err)
+	}
+	log.Printf("[server] IP pool ready: subnet=%s size=%d", cfg.ClientSubnet, pool.Size())
+
+	// -- Per-client session map: netip.Addr → *clientSession --
+	var sessions sync.Map
 
 	// -- TLS config --
 	tlsCfg, err := tlsdecoy.NewDecoyTLSConfig(cfg.CertFile, cfg.KeyFile)
@@ -146,13 +170,13 @@ func main() {
 		}
 		defer el.Close()
 		log.Printf("Extra listener on %s", extra)
-		go acceptLoop(el, keys, store, tun)
+		go acceptLoop(el, keys, store, tunDev, pool, &sessions)
 	}
 
 	// -- Management API --
 	var apiServer *api.Server
 	if cfg.API.Enabled {
-		apiServer = api.NewServer(cfg, "0.3.0", store)
+		apiServer = api.NewServer(cfg, "0.4.0", store)
 		apiServer.RegisterWebUI()
 		go func() {
 			if err := apiServer.ListenAndServeTLS(); err != nil {
@@ -160,6 +184,9 @@ func main() {
 			}
 		}()
 	}
+
+	// -- TUN→client relay (single goroutine, routes by dest IP) --
+	go tunToClientRelay(tunDev, &sessions)
 
 	// -- Graceful shutdown --
 	sigs := make(chan os.Signal, 1)
@@ -175,16 +202,60 @@ func main() {
 	}()
 
 	// -- Accept loop (main listener) --
-	acceptLoop(listener, keys, store, tun)
+	acceptLoop(listener, keys, store, tunDev, pool, &sessions)
 }
 
-// activeTunnel is the channel for the current active client tunnel.
-var activeTunnel = make(chan *tunnel.Tunnel, 1)
+// tunToClientRelay reads packets from the TUN device and routes each to the
+// matching client session by inspecting the IPv4 destination address (bytes 16-19).
+// Packets for unknown destinations are dropped with a debug log.
+func tunToClientRelay(tun *tunnel.TunDevice, sessions *sync.Map) {
+	buf := make([]byte, tunnel.MaxFrameSize)
+	for {
+		n, err := tun.Read(buf)
+		if err != nil {
+			log.Printf("[relay] TUN read error: %v", err)
+			return
+		}
 
-func acceptLoop(listener transport.Listener, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice) {
-	// Start TUN→client relay (only once for main listener)
-	go tunToClientRelay(tun)
+		dst, err := dstFromIPv4(buf[:n])
+		if err != nil {
+			log.Printf("[relay] DEBUG drop packet: %v", err)
+			continue
+		}
 
+		val, ok := sessions.Load(dst)
+		if !ok {
+			log.Printf("[relay] DEBUG drop packet: no session for dst=%s", dst)
+			continue
+		}
+
+		sess := val.(*clientSession)
+		if err := sess.tun.Send(buf[:n]); err != nil {
+			log.Printf("[relay] Send to %s (user=%q): %v", dst, sess.username, err)
+		}
+	}
+}
+
+// dstFromIPv4 extracts the destination IP address from an IPv4 packet.
+// Returns an error if the packet is too short or not IPv4.
+func dstFromIPv4(packet []byte) (netip.Addr, error) {
+	if len(packet) < 20 {
+		return netip.Addr{}, fmt.Errorf("packet too short (%d bytes, need ≥20)", len(packet))
+	}
+	if packet[0]>>4 != 4 {
+		return netip.Addr{}, fmt.Errorf("not IPv4 (version nibble=%d)", packet[0]>>4)
+	}
+	return netip.AddrFrom4([4]byte(packet[16:20])), nil
+}
+
+func acceptLoop(
+	listener transport.Listener,
+	keys *tunnel.Keys,
+	store *auth.FileStore,
+	tun *tunnel.TunDevice,
+	pool *ippool.Pool,
+	sessions *sync.Map,
+) {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -192,39 +263,7 @@ func acceptLoop(listener transport.Listener, keys *tunnel.Keys, store *auth.File
 			return
 		}
 
-		go serveConnection(conn, keys, store, tun)
-	}
-}
-
-func tunToClientRelay(tun *tunnel.TunDevice) {
-	var current *tunnel.Tunnel
-	buf := make([]byte, tunnel.MaxFrameSize)
-	for {
-		select {
-		case t := <-activeTunnel:
-			current = t
-		default:
-		}
-
-		if current == nil {
-			select {
-			case t := <-activeTunnel:
-				current = t
-			case <-time.After(100 * time.Millisecond):
-				continue
-			}
-		}
-
-		n, readErr := tun.Read(buf)
-		if readErr != nil {
-			log.Printf("TUN read: %v", readErr)
-			return
-		}
-
-		if sendErr := current.Send(buf[:n]); sendErr != nil {
-			log.Printf("Send to client: %v", sendErr)
-			current = nil
-		}
+		go serveConnection(conn, keys, store, tun, pool, sessions)
 	}
 }
 
@@ -233,19 +272,19 @@ func serveConnection(
 	keys *tunnel.Keys,
 	store *auth.FileStore,
 	tun *tunnel.TunDevice,
+	pool *ippool.Pool,
+	sessions *sync.Map,
 ) {
 	defer conn.Close()
 	remoteAddr := conn.RemoteAddr().String()
 
-	// Auto-detect transport: peek first bytes to determine WS vs raw TLS
 	peekConn, isPeekable := conn.(*transport.PeekConn)
 	if !isPeekable {
 		log.Printf("[server] Connection from %s is not peekable, treating as raw TLS", remoteAddr)
-		serveRawAuth(conn, keys, store, tun, remoteAddr)
+		serveRawAuth(conn, keys, store, tun, remoteAddr, pool, sessions)
 		return
 	}
 
-	// Peek at first bytes with a timeout
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	peeked, err := peekConn.Peek(3)
 	conn.SetReadDeadline(time.Time{})
@@ -257,17 +296,22 @@ func serveConnection(
 
 	if transport.IsWebSocketUpgrade(peeked) {
 		log.Printf("[server] WebSocket upgrade detected from %s (peeked=%x)", remoteAddr, peeked)
-		serveWebSocket(peekConn, keys, store, tun, remoteAddr)
+		serveWebSocket(peekConn, keys, store, tun, remoteAddr, pool, sessions)
 	} else {
 		log.Printf("[server] Raw TLS auth detected from %s (peeked=%x)", remoteAddr, peeked)
-		serveRawAuth(peekConn, keys, store, tun, remoteAddr)
+		serveRawAuth(peekConn, keys, store, tun, remoteAddr, pool, sessions)
 	}
 }
 
-// serveWebSocket handles a WebSocket client connection.
-func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
-	// PeekConn.Read() transparently replays peeked bytes,
-	// so ServerUpgrade reads the full HTTP request from it.
+func serveWebSocket(
+	conn *transport.PeekConn,
+	keys *tunnel.Keys,
+	store *auth.FileStore,
+	tun *tunnel.TunDevice,
+	remoteAddr string,
+	pool *ippool.Pool,
+	sessions *sync.Map,
+) {
 	wsConn, err := ws.ServerUpgrade(conn, nil)
 	if err != nil {
 		log.Printf("[server] WS upgrade failed from %s: %v -> decoy mode", remoteAddr, err)
@@ -275,20 +319,31 @@ func serveWebSocket(conn *transport.PeekConn, keys *tunnel.Keys, store *auth.Fil
 		return
 	}
 	log.Printf("[server] WebSocket established with %s", remoteAddr)
-
-	// Now authenticate over WebSocket
-	serveAuth(wsConn, keys, store, tun, remoteAddr)
+	serveAuth(wsConn, keys, store, tun, remoteAddr, pool, sessions)
 }
 
-// serveRawAuth handles raw TLS auth.
-func serveRawAuth(conn net.Conn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
-	serveAuth(conn, keys, store, tun, remoteAddr)
+func serveRawAuth(
+	conn net.Conn,
+	keys *tunnel.Keys,
+	store *auth.FileStore,
+	tun *tunnel.TunDevice,
+	remoteAddr string,
+	pool *ippool.Pool,
+	sessions *sync.Map,
+) {
+	serveAuth(conn, keys, store, tun, remoteAddr, pool, sessions)
 }
 
-// serveAuth performs VPN authentication via credentials and starts the tunnel.
-// Works with both raw TLS and WebSocket connections.
-func serveAuth(conn net.Conn, keys *tunnel.Keys, store *auth.FileStore, tun *tunnel.TunDevice, remoteAddr string) {
-	// Read credential frame (version 0x02 + username + password)
+// serveAuth authenticates the client, assigns an IP from the pool, and runs the tunnel.
+func serveAuth(
+	conn net.Conn,
+	keys *tunnel.Keys,
+	store *auth.FileStore,
+	tunDev *tunnel.TunDevice,
+	remoteAddr string,
+	pool *ippool.Pool,
+	sessions *sync.Map,
+) {
 	username, password, err := tlsdecoy.ReadCredAuth(conn)
 	if err != nil {
 		log.Printf("[server] Credential read failed from %s: %v -> decoy mode", remoteAddr, err)
@@ -302,22 +357,42 @@ func serveAuth(conn net.Conn, keys *tunnel.Keys, store *auth.FileStore, tun *tun
 		return
 	}
 
-	log.Printf("[server] VPN client authenticated: user=%q addr=%s", username, remoteAddr)
-	conn.Write([]byte("OK"))
+	// Allocate a client IP from the pool.
+	assignedIP, err := pool.Allocate()
+	if err != nil {
+		log.Printf("[server] Pool exhausted, rejecting user=%q from %s: %v", username, remoteAddr, err)
+		conn.Close()
+		return
+	}
+	assignedPrefix := netip.PrefixFrom(assignedIP, pool.Prefix().Bits())
+	defer pool.Release(assignedIP)
 
+	log.Printf("[server] VPN client authenticated: user=%q addr=%s assigned=%s", username, remoteAddr, assignedPrefix)
+
+	// Respond with the assigned IP so the client can configure its TUN.
+	if _, err := fmt.Fprintf(conn, "OK %s\n", assignedPrefix.String()); err != nil {
+		log.Printf("[server] Failed to send OK to %s: %v", remoteAddr, err)
+		return
+	}
+
+	// Register session so tunToClientRelay can route packets to this client.
 	tun2 := tunnel.New(keys, conn)
-	activeTunnel <- tun2
+	sess := &clientSession{tun: tun2, username: username}
+	sessions.Store(assignedIP, sess)
+	defer sessions.Delete(assignedIP)
 
-	// Read packets from client
+	log.Printf("[server] DEBUG session registered: ip=%s user=%q", assignedIP, username)
+
+	// Receive packets from client → write to TUN (kernel handles routing to other clients).
 	for {
 		plaintext, err := tun2.Recv()
 		if err != nil {
-			log.Printf("[server] Client %s (user=%q) disconnected: %v", remoteAddr, username, err)
+			log.Printf("[server] Client %s (user=%q ip=%s) disconnected: %v", remoteAddr, username, assignedIP, err)
 			return
 		}
 
-		if _, err := tun.Write(plaintext); err != nil {
-			log.Printf("[server] TUN write: %v", err)
+		if _, werr := tunDev.Write(plaintext); werr != nil {
+			log.Printf("[server] TUN write: %v", werr)
 		}
 	}
 }

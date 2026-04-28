@@ -79,6 +79,9 @@ func (p *Pool) Release(addr netip.Addr) {
 	log.Printf("[ippool] DEBUG released %s  used=%d/%d", addr, len(p.allocated), p.capacity())
 }
 
+// Prefix returns the CIDR prefix this pool manages.
+func (p *Pool) Prefix() netip.Prefix { return p.prefix }
+
 // Size returns the total number of allocatable addresses (excluding reserved).
 func (p *Pool) Size() int {
 	p.mu.Lock()
