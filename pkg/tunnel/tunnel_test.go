@@ -2,7 +2,11 @@ package tunnel
 
 import (
 	"bytes"
+	"fmt"
+	"net"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestDeriveKeys(t *testing.T) {
@@ -143,6 +147,62 @@ func TestTunnelLargePacket(t *testing.T) {
 
 	if !bytes.Equal(received, original) {
 		t.Error("Large packet roundtrip mismatch")
+	}
+}
+
+// TestTunnelConcurrentSend verifies Send is goroutine-safe under -race.
+// Without writeMu, the race detector catches concurrent access to encBuf/obfsBuf.
+func TestTunnelConcurrentSend(t *testing.T) {
+	keys, err := DeriveKeys("test-concurrent-send")
+	if err != nil {
+		t.Fatalf("DeriveKeys: %v", err)
+	}
+
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	tun := New(keys, client)
+
+	// Drain the server side so Send calls don't block on a full pipe.
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, 8192)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				server.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+				server.Read(buf) //nolint:errcheck
+			}
+		}
+	}()
+
+	const goroutines = 8
+	const sendsEach = 20
+	errs := make(chan error, goroutines*sendsEach)
+	var wg sync.WaitGroup
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < sendsEach; j++ {
+				pkt := []byte(fmt.Sprintf("pkt g%d s%d", id, j))
+				if err := tun.Send(pkt); err != nil {
+					errs <- fmt.Errorf("goroutine %d send %d: %w", id, j, err)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(done)
+	close(errs)
+
+	for err := range errs {
+		t.Errorf("concurrent Send: %v", err)
 	}
 }
 

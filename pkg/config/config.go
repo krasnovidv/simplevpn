@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"log"
+	"net/netip"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -25,9 +26,10 @@ type ServerConfig struct {
 	Transport TransportConfig `yaml:"transport"`
 
 	// TUN interface
-	TunIP   string `yaml:"tun_ip"`
-	TunName string `yaml:"tun_name"`
-	MTU     int    `yaml:"mtu"`
+	TunIP        string `yaml:"tun_ip"`
+	TunName      string `yaml:"tun_name"`
+	MTU          int    `yaml:"mtu"`
+	ClientSubnet string `yaml:"client_subnet"` // CIDR pool for per-client IP assignment
 
 	// Management API
 	API APIConfig `yaml:"api"`
@@ -71,9 +73,10 @@ func Defaults() *ServerConfig {
 		Listen:  ":443",
 		CertFile: "cert.pem",
 		KeyFile:  "key.pem",
-		TunIP:   "10.0.0.1/24",
-		TunName: "tun0",
-		MTU:     1380,
+		TunIP:        "10.0.0.1/24",
+		TunName:      "tun0",
+		MTU:          1380,
+		ClientSubnet: "10.0.0.0/24",
 		LogLevel:  "info",
 		UsersFile: "/etc/simplevpn/users.yaml",
 		API: APIConfig{
@@ -98,8 +101,8 @@ func Load(path string) (*ServerConfig, error) {
 		return nil, fmt.Errorf("parse config %s: %w", path, err)
 	}
 
-	log.Printf("[config] Config loaded: listen=%s tun=%s/%s mtu=%d api_enabled=%v",
-		cfg.Listen, cfg.TunName, cfg.TunIP, cfg.MTU, cfg.API.Enabled)
+	log.Printf("[config] Config loaded: listen=%s tun=%s/%s mtu=%d client_subnet=%s api_enabled=%v",
+		cfg.Listen, cfg.TunName, cfg.TunIP, cfg.MTU, cfg.ClientSubnet, cfg.API.Enabled)
 
 	return cfg, nil
 }
@@ -129,6 +132,19 @@ func (c *ServerConfig) Validate() error {
 	}
 	if c.API.Enabled && c.API.BearerToken == "" {
 		return fmt.Errorf("api.bearer_token is required when api is enabled")
+	}
+	if c.ClientSubnet != "" {
+		subnet, err := netip.ParsePrefix(c.ClientSubnet)
+		if err != nil {
+			return fmt.Errorf("client_subnet %q: %w", c.ClientSubnet, err)
+		}
+		tunAddr, err := netip.ParsePrefix(c.TunIP)
+		if err != nil {
+			return fmt.Errorf("tun_ip %q: %w", c.TunIP, err)
+		}
+		if !subnet.Masked().Contains(tunAddr.Addr()) {
+			return fmt.Errorf("client_subnet %s must contain tun_ip %s", c.ClientSubnet, tunAddr.Addr())
+		}
 	}
 	return nil
 }

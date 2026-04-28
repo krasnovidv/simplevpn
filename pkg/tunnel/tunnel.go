@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sync"
 
 	vpncrypto "simplevpn/pkg/crypto"
 	"simplevpn/pkg/obfs"
@@ -19,13 +20,14 @@ import (
 // Tunnel handles encrypting/obfuscating outgoing packets and
 // decrypting/deobfuscating incoming packets over a TLS connection.
 type Tunnel struct {
-	keys        *Keys
-	replayWin   *replay.Window
-	conn        io.ReadWriter
-	frameBuf    []byte
-	encBuf      []byte
-	obfsBuf     []byte
-	decBuf      []byte
+	keys      *Keys
+	replayWin *replay.Window
+	conn      io.ReadWriter
+	writeMu   sync.Mutex // guards Send: encBuf, obfsBuf, and conn writes
+	frameBuf  []byte
+	encBuf    []byte
+	obfsBuf   []byte
+	decBuf    []byte
 }
 
 // New creates a Tunnel that reads/writes framed, encrypted, obfuscated packets over conn.
@@ -45,7 +47,11 @@ func New(keys *Keys, conn io.ReadWriter) *Tunnel {
 }
 
 // Send encrypts, obfuscates, and writes a packet (IP payload) to the connection.
+// Safe for concurrent use — callers from relay and keepalive goroutines both call Send.
 func (t *Tunnel) Send(packet []byte) error {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
 	encrypted, err := t.keys.Cipher.Encrypt(t.encBuf[:0], packet)
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
