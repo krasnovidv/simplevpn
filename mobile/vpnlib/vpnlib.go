@@ -18,15 +18,17 @@
 package vpnlib
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -118,18 +120,47 @@ func SetProtector(p SocketProtector) {
 
 // state holds the current connection state.
 type state struct {
-	mu        sync.Mutex
-	connected bool
-	conn      net.Conn
-	tunFile   *os.File
-	stopCh    chan struct{}
-	status    string
+	mu             sync.Mutex
+	connected      bool
+	conn           net.Conn
+	tunFile        *os.File
+	stopCh         chan struct{}
+	status         string
+	assignedPrefix netip.Prefix // IP assigned by server, e.g. "10.0.0.2/24"
+
+	// Pending preflight state — valid between Preflight() and RunTunnel() calls.
+	pendingBC         *bufConn     // authenticated + bufio-wrapped connection
+	pendingKeys       *tunnel.Keys
+	preflightCh       chan struct{} // closed by RunTunnel to cancel watchdog
+	connectUnlockOnce *sync.Once   // ensures connectMu.Unlock is called exactly once
 }
+
+// AssignedPrefix returns the IP prefix assigned by the server for this session.
+// Returns an empty string when not connected or when the server did not assign an IP.
+func AssignedPrefix() string {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	if !current.assignedPrefix.IsValid() {
+		return ""
+	}
+	return current.assignedPrefix.String()
+}
+
+// bufConn wraps a net.Conn to replay bytes already consumed by a bufio.Reader.
+// After using bufio.Reader to read the auth response line, the reader may have
+// pre-buffered bytes beyond the '\n'. Without this wrapper, tunnel.New would
+// read from the raw conn and lose those buffered bytes.
+type bufConn struct {
+	r *bufio.Reader
+	net.Conn
+}
+
+func (bc *bufConn) Read(p []byte) (int, error) { return bc.r.Read(p) }
 
 var current = &state{status: "disconnected"}
 
-// connectMu prevents concurrent Connect() calls from racing.
-// This is separate from current.mu to avoid holding the state lock during the entire connection.
+// connectMu is held from Preflight() until RunTunnel() returns (or the watchdog fires).
+// This prevents concurrent connection attempts.
 var connectMu sync.Mutex
 
 // defaultTransport returns the default transport type for the current platform.
@@ -315,38 +346,56 @@ func Connect(configJSON string, fd int) error {
 	}
 	log.Printf("[vpnlib] Credentials sent, waiting for server response (10s timeout) ...")
 
-	okBuf := make([]byte, 2)
+	// Read auth response line: "OK <ip>/<prefix>\n"
+	// Use bufio so we can read up to '\n' precisely; wrap conn in bufConn
+	// afterwards so any pre-buffered bytes are not lost when tunnel.New reads.
+	br := bufio.NewReader(conn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	if _, err := io.ReadFull(conn, okBuf); err != nil {
-		log.Printf("[vpnlib] ERROR: reading auth response: %v", err)
+	line, err := br.ReadString('\n')
+	conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		log.Printf("[vpnlib] ERROR: reading auth response line: %v", err)
 		conn.Close()
 		setStatus("error: auth response: " + err.Error())
 		return fmt.Errorf("auth response: %w", err)
 	}
-	conn.SetReadDeadline(time.Time{})
 
-	log.Printf("[vpnlib] Auth response received: %q", string(okBuf))
-	if string(okBuf) != "OK" {
-		log.Printf("[vpnlib] ERROR: auth rejected (got %q, expected \"OK\")", string(okBuf))
+	line = strings.TrimSpace(line)
+	log.Printf("[vpnlib] Auth response received: %q", line)
+
+	if !strings.HasPrefix(line, "OK ") {
+		log.Printf("[vpnlib] ERROR: auth rejected (response=%q)", line)
 		conn.Close()
 		setStatus("error: auth rejected")
-		return fmt.Errorf("auth rejected")
+		return fmt.Errorf("auth rejected: %s", line)
 	}
-	log.Printf("[vpnlib] Step 4/4: Authenticated OK (transport=%s, fingerprint=%s)", tt, fp)
 
-	// Store connection state
+	assignedPrefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
+	if err != nil {
+		log.Printf("[vpnlib] ERROR: parse assigned prefix %q: %v", line, err)
+		conn.Close()
+		setStatus("error: bad assigned prefix")
+		return fmt.Errorf("parse assigned prefix: %w", err)
+	}
+	log.Printf("[vpnlib] Step 4/4: Authenticated OK, assigned=%s (transport=%s, fingerprint=%s)", assignedPrefix, tt, fp)
+
+	// Store connection state and assigned IP.
 	current.mu.Lock()
 	current.connected = true
 	current.conn = conn
 	current.tunFile = tunFile
 	current.status = "connected"
+	current.assignedPrefix = assignedPrefix
 	stopCh := current.stopCh
 	current.mu.Unlock()
 
 	log.Printf("[vpnlib] Tunnel active, starting data relay goroutines")
 
+	// Wrap conn in bufConn so buffered bytes past '\n' are not lost.
+	bc := &bufConn{r: br, Conn: conn}
+
 	// Create tunnel
-	tun := tunnel.New(keys, conn)
+	tun := tunnel.New(keys, bc)
 
 	// TUN → Transport (send)
 	// [FIX] tunReaderDone signals when the goroutine exits, so cleanup waits for it
@@ -418,6 +467,298 @@ func Connect(configJSON string, fd int) error {
 		if _, err := tunFile.Write(plaintext); err != nil {
 			log.Printf("[vpnlib] TUN write error (after %d packets): %v", recvCount, err)
 			cleanup(conn, tunFile)
+			setStatus("error: tun write: " + err.Error())
+			return err
+		}
+		recvCount++
+	}
+}
+
+// Preflight authenticates with the VPN server and returns the assigned IP prefix
+// (e.g. "10.0.0.2/24"). The caller must use this IP to configure the TUN interface
+// and then call RunTunnel(fd) within 10 seconds.
+//
+// Returns "error: <message>" on failure. Returns the assigned prefix on success.
+//
+// Lifecycle guarantee: holds connectMu after returning successfully.
+// Either RunTunnel or a 10-second watchdog will release it.
+func Preflight(configJSON string) string {
+	connectMu.Lock()
+	log.Printf("[vpnlib] Preflight: connectMu acquired")
+
+	unlockOnce := &sync.Once{}
+
+	current.mu.Lock()
+	if current.connected {
+		current.mu.Unlock()
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: already connected"
+	}
+	current.status = "connecting"
+	current.stopCh = make(chan struct{})
+	current.mu.Unlock()
+
+	log.Printf("[vpnlib] Preflight: config len=%d", len(configJSON))
+
+	var cfg Config
+	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		setStatus("error: bad config: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: bad config: " + err.Error()
+	}
+
+	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
+		setStatus("error: missing required fields")
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: server, server_key, username, and password are required"
+	}
+
+	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
+	if err != nil {
+		setStatus("error: derive keys: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: derive keys: " + err.Error()
+	}
+
+	sni := cfg.SNI
+	if sni == "" {
+		h, _, e := net.SplitHostPort(cfg.Server)
+		if e == nil {
+			sni = h
+		}
+	}
+	tt := transport.Type(cfg.Transport)
+	if tt == "" {
+		tt = defaultTransport()
+	}
+	fp := transport.FingerprintProfile(cfg.Fingerprint)
+	if fp == "" {
+		fp = defaultFingerprint()
+	}
+
+	dialer, err := transport.NewDialer(tt, fp)
+	if err != nil {
+		setStatus("error: transport: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: transport: " + err.Error()
+	}
+
+	dialCfg := &transport.DialConfig{
+		ServerAddr:  cfg.Server,
+		SNI:         sni,
+		Fingerprint: fp,
+	}
+	if cfg.SkipVerify {
+		dialCfg.TLSConfig = &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+			MinVersion:         tls.VersionTLS13,
+			NextProtos:         []string{"http/1.1"},
+		}
+	}
+	if protector != nil {
+		dialCfg.DialControl = func(network, address string, c interface{}) error {
+			rawConn, ok := c.(syscall.RawConn)
+			if !ok {
+				return nil
+			}
+			var protectErr error
+			rawConn.Control(func(fd uintptr) { //nolint:errcheck
+				if !protector.ProtectSocket(int32(fd)) {
+					protectErr = fmt.Errorf("protect socket fd=%d failed", fd)
+				}
+			})
+			return protectErr
+		}
+	} else {
+		log.Printf("[vpnlib] WARNING: no socket protector set in Preflight")
+	}
+
+	log.Printf("[vpnlib] Preflight: dialing %s via %s", cfg.Server, tt)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := dialer.Dial(ctx, dialCfg)
+	if err != nil {
+		setStatus("error: connect: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: connect: " + err.Error()
+	}
+	log.Printf("[vpnlib] Preflight: connected to %s, authenticating", cfg.Server)
+
+	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
+	if err != nil {
+		conn.Close()
+		setStatus("error: auth gen: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: auth gen: " + err.Error()
+	}
+	if _, err := conn.Write(credFrame); err != nil {
+		conn.Close()
+		setStatus("error: auth send: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: auth send: " + err.Error()
+	}
+
+	br := bufio.NewReader(conn)
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	line, err := br.ReadString('\n')
+	conn.SetReadDeadline(time.Time{})
+	if err != nil {
+		conn.Close()
+		setStatus("error: auth response: " + err.Error())
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: auth response: " + err.Error()
+	}
+
+	line = strings.TrimSpace(line)
+	log.Printf("[vpnlib] Preflight: auth response=%q", line)
+
+	if !strings.HasPrefix(line, "OK ") {
+		conn.Close()
+		setStatus("error: auth rejected")
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: auth rejected: " + line
+	}
+
+	assignedPrefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
+	if err != nil {
+		conn.Close()
+		setStatus("error: bad assigned prefix")
+		unlockOnce.Do(connectMu.Unlock)
+		return "error: bad assigned prefix: " + err.Error()
+	}
+	log.Printf("[vpnlib] Preflight: assigned=%s", assignedPrefix)
+
+	bc := &bufConn{r: br, Conn: conn}
+	preflightCh := make(chan struct{})
+
+	current.mu.Lock()
+	current.pendingBC = bc
+	current.pendingKeys = keys
+	current.assignedPrefix = assignedPrefix
+	current.preflightCh = preflightCh
+	current.connectUnlockOnce = unlockOnce
+	current.mu.Unlock()
+
+	// Watchdog: close pending conn and release mutex if RunTunnel not called in 10s.
+	go func() {
+		select {
+		case <-preflightCh:
+			log.Printf("[vpnlib] Preflight watchdog: cancelled by RunTunnel")
+		case <-time.After(10 * time.Second):
+			log.Printf("[vpnlib] Preflight watchdog: RunTunnel not called, closing conn")
+			current.mu.Lock()
+			if current.pendingBC != nil {
+				current.pendingBC.Close()
+				current.pendingBC = nil
+				current.pendingKeys = nil
+			}
+			current.status = "disconnected"
+			current.mu.Unlock()
+			unlockOnce.Do(connectMu.Unlock)
+		}
+	}()
+
+	return assignedPrefix.String()
+}
+
+// RunTunnel starts the VPN data relay using the given TUN file descriptor.
+// Must be called within 10 seconds of a successful Preflight() call.
+// Blocks until the tunnel closes or Disconnect() is called.
+func RunTunnel(fd int) error {
+	current.mu.Lock()
+	bc := current.pendingBC
+	keys := current.pendingKeys
+	stopCh := current.stopCh
+	unlockOnce := current.connectUnlockOnce
+
+	if bc == nil || keys == nil || unlockOnce == nil {
+		current.mu.Unlock()
+		return fmt.Errorf("RunTunnel called without a pending Preflight, or watchdog expired")
+	}
+
+	// Cancel the watchdog — we own the connection now.
+	close(current.preflightCh)
+	current.pendingBC = nil
+	current.pendingKeys = nil
+	current.preflightCh = nil
+	current.mu.Unlock()
+
+	// connectMu is released when RunTunnel returns (tunnel closes or Disconnect called).
+	defer unlockOnce.Do(connectMu.Unlock)
+
+	log.Printf("[vpnlib] RunTunnel: fd=%d assigned=%s", fd, current.assignedPrefix)
+
+	tunFile := os.NewFile(uintptr(fd), "tun")
+	if tunFile == nil {
+		setStatus("error: invalid tun fd")
+		return fmt.Errorf("invalid tun fd: %d", fd)
+	}
+
+	current.mu.Lock()
+	current.connected = true
+	current.conn = bc
+	current.tunFile = tunFile
+	current.status = "connected"
+	current.mu.Unlock()
+
+	log.Printf("[vpnlib] RunTunnel: tunnel active, starting relay goroutines")
+
+	tun := tunnel.New(keys, bc)
+
+	tunReaderDone := make(chan struct{})
+	go func() {
+		defer close(tunReaderDone)
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[FIX] Panic in TUN→Transport goroutine (RunTunnel): %v", r)
+				setStatus("error: tun reader panic")
+			}
+		}()
+		buf := make([]byte, tunnel.MaxFrameSize)
+		var count int64
+		for {
+			select {
+			case <-stopCh:
+				log.Printf("[vpnlib] RunTunnel TUN→Transport stopping (sent %d pkts)", count)
+				return
+			default:
+			}
+			n, err := tunFile.Read(buf)
+			if err != nil {
+				log.Printf("[vpnlib] RunTunnel TUN read error: %v", err)
+				return
+			}
+			if err := tun.Send(buf[:n]); err != nil {
+				log.Printf("[vpnlib] RunTunnel Send error: %v", err)
+				return
+			}
+			count++
+		}
+	}()
+
+	var recvCount int64
+	for {
+		select {
+		case <-stopCh:
+			log.Printf("[vpnlib] RunTunnel recv loop stopping (received %d pkts)", recvCount)
+			cleanup(bc, tunFile)
+			return nil
+		default:
+		}
+
+		plaintext, err := tun.Recv()
+		if err != nil {
+			log.Printf("[vpnlib] RunTunnel Recv error (after %d pkts): %v", recvCount, err)
+			cleanup(bc, tunFile)
+			setStatus("error: recv: " + err.Error())
+			return err
+		}
+
+		if _, err := tunFile.Write(plaintext); err != nil {
+			log.Printf("[vpnlib] RunTunnel TUN write error: %v", err)
+			cleanup(bc, tunFile)
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}

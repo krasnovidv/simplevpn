@@ -109,43 +109,58 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
             Log.d(TAG, "Foreground service started")
 
-            // Create TUN interface
-            val builder = Builder()
-                .setSession("SimpleVPN")
-                .addAddress("10.0.0.2", 24)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("1.1.1.1")
-                .addDnsServer("8.8.8.8")
-                .setMtu(1380)
-                .setBlocking(true)
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                builder.setMetered(false)
-            }
-
-            Log.d(TAG, "TUN builder: address=10.0.0.2/24, routes=0.0.0.0/0, dns=1.1.1.1+8.8.8.8, mtu=1380")
-            vpnInterface = builder.establish()
-            if (vpnInterface == null) {
-                Log.e(TAG, "builder.establish() returned null — VPN permission may not be granted")
-                throw Exception("Failed to create TUN interface (establish returned null)")
-            }
-            val fd = vpnInterface!!.fd
-
-            Log.i(TAG, "TUN interface created, fd=$fd")
-
             // Set socket protector so Go can protect the VPN socket from TUN routing
-            Log.d(TAG, "Setting socket protector on Vpnlib")
             Vpnlib.setProtector(this)
 
-            // Vpnlib.connect() is blocking — run on a background thread
+            // Preflight + RunTunnel run on a background thread.
+            // Preflight authenticates and returns the server-assigned IP prefix.
+            // RunTunnel builds the TUN interface with that IP and starts the relay.
             connectThread = Thread({
                 try {
-                    Log.d(TAG, "Calling Vpnlib.connect() on background thread")
-                    Vpnlib.connect(config, fd.toLong())
-                    // connect() returns when tunnel closes normally
-                    Log.i(TAG, "Vpnlib.connect() returned normally")
+                    Log.d(TAG, "Calling Vpnlib.preflight() on background thread")
+                    val prefix = Vpnlib.preflight(config)
+                    if (prefix.startsWith("error:")) {
+                        throw Exception(prefix.removePrefix("error:").trim())
+                    }
+
+                    // Parse "10.0.0.2/24" → ip="10.0.0.2", prefixLen=24
+                    val slashIdx = prefix.lastIndexOf('/')
+                    if (slashIdx < 0) throw Exception("Invalid assigned prefix: $prefix")
+                    val ip = prefix.substring(0, slashIdx)
+                    val prefixLen = prefix.substring(slashIdx + 1).toIntOrNull()
+                        ?: throw Exception("Invalid prefix length in: $prefix")
+
+                    Log.i(TAG, "Preflight OK, assigned=$prefix")
+
+                    // Build TUN with the server-assigned IP.
+                    val builder = Builder()
+                        .setSession("SimpleVPN")
+                        .addAddress(ip, prefixLen)
+                        .addRoute("0.0.0.0", 0)
+                        .addDnsServer("1.1.1.1")
+                        .addDnsServer("8.8.8.8")
+                        .setMtu(1380)
+                        .setBlocking(true)
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        builder.setMetered(false)
+                    }
+
+                    Log.d(TAG, "TUN builder: address=$prefix, routes=0.0.0.0/0, dns=1.1.1.1+8.8.8.8, mtu=1380")
+                    vpnInterface = builder.establish()
+                    if (vpnInterface == null) {
+                        throw Exception("Failed to create TUN interface (establish returned null)")
+                    }
+                    val fd = vpnInterface!!.fd
+                    Log.i(TAG, "TUN interface created, fd=$fd assigned=$prefix")
+
+                    // RunTunnel blocks until the tunnel closes.
+                    Log.d(TAG, "Calling Vpnlib.runTunnel(fd=$fd)")
+                    Vpnlib.runTunnel(fd.toLong())
+                    Log.i(TAG, "Vpnlib.runTunnel() returned normally")
+
                 } catch (e: Exception) {
-                    Log.e(TAG, "Vpnlib.connect() error: ${e.message}", e)
+                    Log.e(TAG, "VPN connect failed: ${e.message}", e)
                     currentStatus = "error: ${e.message}"
                 } finally {
                     // [FIX] Release connect lock so future connects can proceed
@@ -154,7 +169,6 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
                     Log.d(TAG, "Connect thread finished, cleaning up (killSwitch=$killSwitch)")
                     if (killSwitch) {
-                        // Keep TUN open to block all traffic (kill switch)
                         Log.i(TAG, "Kill switch active — keeping TUN interface to block traffic")
                         updateNotification("VPN disconnected — traffic blocked (kill switch)")
                         currentStatus = "disconnected"
@@ -172,11 +186,10 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             }, "vpnlib-connect")
             connectThread!!.start()
 
-            // NOTE: Do NOT set currentStatus = "connected" here!
             // Status stays "connecting" until Go-side confirms via Vpnlib.status()
             Log.i(TAG, "VPN tunnel thread started, status remains 'connecting' until Go confirms")
             updateNotification("Connecting...")
-            reconnectAttempt = 0 // Reset backoff on new connection attempt
+            reconnectAttempt = 0
 
             if (autoReconnect && networkCallback == null) {
                 setupNetworkMonitoring()
