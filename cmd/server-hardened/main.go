@@ -21,6 +21,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -29,6 +31,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,10 +45,27 @@ import (
 	"simplevpn/pkg/tunnel"
 )
 
-// clientSession holds the active tunnel for a connected client.
+// clientSession holds the active tunnel and stats for a connected client.
 type clientSession struct {
-	tun      *tunnel.Tunnel
+	id       string
 	username string
+	conn     net.Conn     // closed by disconnect callback to terminate recv loop
+	tun      *tunnel.Tunnel
+	bytesIn  atomic.Int64 // plaintext bytes received from client (client→TUN)
+	bytesOut atomic.Int64 // plaintext bytes sent to client (TUN→client)
+}
+
+// apiSrv is the management API server; nil when API is disabled.
+var apiSrv *api.Server
+
+// newSessionID returns a 16-char hex random session ID (URL-safe, no colons).
+func newSessionID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Fallback: use time — should never happen.
+		log.Printf("[server] WARNING: rand.Read failed: %v", err)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 func main() {
@@ -174,12 +194,30 @@ func main() {
 	}
 
 	// -- Management API --
-	var apiServer *api.Server
 	if cfg.API.Enabled {
-		apiServer = api.NewServer(cfg, "0.4.0", store)
-		apiServer.RegisterWebUI()
+		apiSrv = api.NewServer(cfg, "0.4.0", store)
+		apiSrv.RegisterWebUI()
+		// Disconnect callback: close the client's conn so the recv-loop in
+		// serveAuth returns an error and triggers deferred cleanup + pool release.
+		apiSrv.SetDisconnectFunc(func(clientID string) error {
+			found := false
+			sessions.Range(func(_, val interface{}) bool {
+				sess := val.(*clientSession)
+				if sess.id == clientID {
+					log.Printf("[server] DEBUG disconnect requested: id=%s user=%q", clientID, sess.username)
+					sess.conn.Close()
+					found = true
+					return false
+				}
+				return true
+			})
+			if !found {
+				return fmt.Errorf("client %s not found", clientID)
+			}
+			return nil
+		})
 		go func() {
-			if err := apiServer.ListenAndServeTLS(); err != nil {
+			if err := apiSrv.ListenAndServeTLS(); err != nil {
 				log.Printf("API server error: %v", err)
 			}
 		}()
@@ -194,8 +232,8 @@ func main() {
 	go func() {
 		<-sigs
 		log.Println("\nShutting down...")
-		if apiServer != nil {
-			apiServer.Shutdown()
+		if apiSrv != nil {
+			apiSrv.Shutdown()
 		}
 		listener.Close()
 		os.Exit(0)
@@ -232,6 +270,8 @@ func tunToClientRelay(tun *tunnel.TunDevice, sessions *sync.Map) {
 		sess := val.(*clientSession)
 		if err := sess.tun.Send(buf[:n]); err != nil {
 			log.Printf("[relay] Send to %s (user=%q): %v", dst, sess.username, err)
+		} else {
+			sess.bytesOut.Add(int64(n))
 		}
 	}
 }
@@ -375,15 +415,52 @@ func serveAuth(
 		return
 	}
 
-	// Register session so tunToClientRelay can route packets to this client.
+	sessionID := newSessionID()
 	tun2 := tunnel.New(keys, conn)
-	sess := &clientSession{tun: tun2, username: username}
+	sess := &clientSession{
+		id:       sessionID,
+		username: username,
+		conn:     conn,
+		tun:      tun2,
+	}
+
+	// Register session for packet routing.
 	sessions.Store(assignedIP, sess)
 	defer sessions.Delete(assignedIP)
 
-	log.Printf("[server] DEBUG session registered: ip=%s user=%q", assignedIP, username)
+	// Register with management API.
+	if apiSrv != nil {
+		apiSrv.RegisterClient(&api.ClientInfo{
+			ID:          sessionID,
+			RemoteAddr:  remoteAddr,
+			ConnectedAt: time.Now(),
+			AssignedIP:  assignedPrefix.String(),
+			Username:    username,
+		})
+		defer apiSrv.UnregisterClient(sessionID)
+	}
 
-	// Receive packets from client → write to TUN (kernel handles routing to other clients).
+	log.Printf("[server] DEBUG session registered: id=%s ip=%s user=%q", sessionID, assignedIP, username)
+
+	// Per-session stats ticker: update API every second.
+	if apiSrv != nil {
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-ticker.C:
+					apiSrv.UpdateClientStats(sessionID, sess.bytesIn.Load(), sess.bytesOut.Load())
+				}
+			}
+		}()
+	}
+
+	// Receive packets from client → write to TUN.
 	for {
 		plaintext, err := tun2.Recv()
 		if err != nil {
@@ -393,6 +470,8 @@ func serveAuth(
 
 		if _, werr := tunDev.Write(plaintext); werr != nil {
 			log.Printf("[server] TUN write: %v", werr)
+		} else {
+			sess.bytesIn.Add(int64(len(plaintext)))
 		}
 	}
 }

@@ -72,6 +72,8 @@ type ClientInfo struct {
 	ConnectedAt time.Time `json:"connected_at"`
 	BytesIn     int64     `json:"bytes_in"`
 	BytesOut    int64     `json:"bytes_out"`
+	AssignedIP  string    `json:"assigned_ip"`
+	Username    string    `json:"username"`
 }
 
 // Server is the management API server.
@@ -143,8 +145,8 @@ func (s *Server) UnregisterClient(id string) {
 
 // UpdateClientStats updates byte counters for a client.
 func (s *Server) UpdateClientStats(id string, bytesIn, bytesOut int64) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if c, ok := s.clients[id]; ok {
 		c.BytesIn = bytesIn
 		c.BytesOut = bytesOut
