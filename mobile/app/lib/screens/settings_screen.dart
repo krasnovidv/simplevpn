@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../services/config_storage.dart';
+import '../services/admin_api_service.dart';
 import '../models/vpn_config.dart';
 import '../utils/validators.dart';
 import 'qr_scanner_screen.dart';
@@ -13,6 +14,7 @@ class SettingsScreen extends StatefulWidget {
 
 class _SettingsScreenState extends State<SettingsScreen> {
   final _storage = ConfigStorage();
+  final _adminApi = AdminApiService();
   final _serverCtrl = TextEditingController();
   final _serverKeyCtrl = TextEditingController();
   final _usernameCtrl = TextEditingController();
@@ -26,6 +28,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loaded = false;
   String? _serverError;
 
+  // Admin settings
+  final _adminUrlCtrl = TextEditingController();
+  final _adminTokenCtrl = TextEditingController();
+  bool _adminSkipVerify = false;
+
   @override
   void initState() {
     super.initState();
@@ -36,6 +43,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final config = await _storage.loadConfig();
     _autoReconnect = await _storage.getAutoReconnect();
     _killSwitch = await _storage.getKillSwitch();
+    final adminSettings = await _adminApi.loadSettings();
 
     if (config != null) {
       _serverCtrl.text = config.server;
@@ -47,6 +55,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _transport = config.transport;
       _fingerprint = config.fingerprint;
     }
+
+    _adminUrlCtrl.text = adminSettings.url;
+    _adminTokenCtrl.text = adminSettings.token;
+    _adminSkipVerify = adminSettings.skipVerify;
 
     setState(() => _loaded = true);
   }
@@ -213,6 +225,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
               setState(() => _killSwitch = v);
             },
           ),
+
+          const Divider(height: 40),
+
+          // Admin API section
+          Text('Admin API', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text(
+            'Connect to the server management API to manage users and clients.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
+                ),
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _adminUrlCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Admin URL',
+              hintText: 'https://1.2.3.4:8443',
+              border: OutlineInputBorder(),
+            ),
+            keyboardType: TextInputType.url,
+          ),
+          const SizedBox(height: 12),
+
+          TextField(
+            controller: _adminTokenCtrl,
+            obscureText: true,
+            decoration: const InputDecoration(
+              labelText: 'Bearer Token',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 4),
+
+          SwitchListTile(
+            title: const Text('Skip TLS Verification'),
+            subtitle: const Text('For self-signed admin certificates'),
+            value: _adminSkipVerify,
+            onChanged: (v) => setState(() => _adminSkipVerify = v),
+            contentPadding: EdgeInsets.zero,
+          ),
+
+          FilledButton.tonal(
+            onPressed: _saveAdmin,
+            child: const Text('Save Admin Settings'),
+          ),
         ],
       ),
     );
@@ -234,6 +293,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Configuration saved')),
+      );
+    }
+  }
+
+  Future<void> _saveAdmin() async {
+    await _adminApi.saveSettings(
+      url: _adminUrlCtrl.text.trim(),
+      token: _adminTokenCtrl.text,
+      skipVerify: _adminSkipVerify,
+    );
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Admin settings saved')),
       );
     }
   }
@@ -262,6 +334,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _usernameCtrl.dispose();
     _passwordCtrl.dispose();
     _sniCtrl.dispose();
+    _adminUrlCtrl.dispose();
+    _adminTokenCtrl.dispose();
     super.dispose();
   }
 }

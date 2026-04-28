@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
+import '../services/admin_api_service.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
 import '../utils/validators.dart';
 import 'settings_screen.dart';
 import 'log_screen.dart';
+import 'admin_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -18,11 +20,13 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   final _vpnService = VpnService();
   final _storage = ConfigStorage();
+  final _adminApi = AdminApiService();
   final _log = EventLog();
   VpnStatus _status = VpnStatus.disconnected;
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
+  bool _adminConfigured = false;
   String _appVersion = '';
 
   @override
@@ -31,6 +35,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _vpnService.addListener(_onStatusChanged);
     _loadConfig();
     _loadAppVersion();
+    _checkAdminConfigured();
     _vpnService.checkInitialStatus();
     _log.info('App started');
   }
@@ -48,6 +53,11 @@ class _HomeScreenState extends State<HomeScreen> {
       _config = config;
       _loading = false;
     });
+  }
+
+  Future<void> _checkAdminConfigured() async {
+    final configured = await _adminApi.isConfigured();
+    if (mounted) setState(() => _adminConfigured = configured);
   }
 
   Future<void> _loadAppVersion() async {
@@ -75,6 +85,14 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('SimpleVPN'),
         actions: [
+          if (_adminConfigured)
+            IconButton(
+              icon: const Icon(Icons.admin_panel_settings),
+              tooltip: 'Admin',
+              onPressed: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const AdminScreen()),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.list_alt),
             tooltip: 'Connection Log',
@@ -90,6 +108,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 MaterialPageRoute(builder: (_) => const SettingsScreen()),
               );
               _loadConfig();
+              _checkAdminConfigured();
             },
           ),
         ],

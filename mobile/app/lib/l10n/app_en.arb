@@ -1,0 +1,83 @@
+{
+  "@@locale": "en",
+
+  "adminSectionTitle": "Admin API",
+  "adminSectionSubtitle": "Connect to the server management API to manage users and clients.",
+  "adminUrlLabel": "Admin URL",
+  "adminTokenLabel": "Bearer Token",
+  "adminSkipVerifyLabel": "Skip TLS Verification",
+  "adminSkipVerifySubtitle": "For self-signed admin certificates",
+  "saveAdminSettings": "Save Admin Settings",
+  "adminSettingsSaved": "Admin settings saved",
+  "adminTooltip": "Admin",
+
+  "usersTab": "Users",
+  "clientsTab": "Clients",
+  "serverTab": "Server",
+
+  "addUserButton": "Add User",
+  "addUserDialogTitle": "Add User",
+  "usernameLabel": "Username",
+  "passwordLabel": "Password",
+  "newPasswordLabel": "New Password",
+  "cancelButton": "Cancel",
+  "createButton": "Create",
+  "updateButton": "Update",
+  "deleteButton": "Delete",
+  "retryButton": "Retry",
+
+  "changePasswordTitle": "Change password for \"{username}\"",
+  "@changePasswordTitle": {
+    "placeholders": {
+      "username": { "type": "String" }
+    }
+  },
+
+  "deleteUserTitle": "Delete User",
+  "deleteUserMessage": "Delete user \"{username}\"? This cannot be undone.",
+  "@deleteUserMessage": {
+    "placeholders": {
+      "username": { "type": "String" }
+    }
+  },
+
+  "changePasswordMenuItem": "Change Password",
+  "enableMenuItem": "Enable",
+  "disableMenuItem": "Disable",
+  "deleteMenuItem": "Delete",
+
+  "noUsersFound": "No users found",
+  "passwordUpdated": "Password updated",
+
+  "disconnectClientTitle": "Disconnect Client",
+  "disconnectClientMessage": "Disconnect \"{username}\" ({ip})?",
+  "@disconnectClientMessage": {
+    "placeholders": {
+      "username": { "type": "String" },
+      "ip": { "type": "String" }
+    }
+  },
+  "disconnectButton": "Disconnect",
+  "noClientsConnected": "No connected clients",
+
+  "statusLabel": "Status",
+  "versionLabel": "Version",
+  "uptimeLabel": "Uptime",
+  "clientsLabel": "Clients",
+  "listenLabel": "Listen",
+  "generateQrButton": "Generate Client QR",
+
+  "adminQrScreenTitle": "Generate Client QR",
+  "qrWarning": "This QR code contains the user's password. Share only over a secure channel.",
+  "clientConfigSection": "Client Configuration",
+  "serverLabel": "Server (ip:port)",
+  "serverKeyLabel": "Server Key",
+  "sniLabel": "SNI Domain (optional)",
+  "transportLabel": "Transport",
+  "userCredentialsSection": "User Credentials",
+  "passwordHelperText": "Enter the password you set for this user",
+  "fillRequiredFields": "Fill all required fields\nto generate QR",
+  "copyConfigJson": "Copy Config JSON",
+  "configJsonCopied": "Config JSON copied to clipboard",
+  "qrTooLarge": "QR too large — reduce field lengths"
+}

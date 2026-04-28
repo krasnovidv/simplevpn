@@ -1,0 +1,83 @@
+{
+  "@@locale": "ru",
+
+  "adminSectionTitle": "Admin API",
+  "adminSectionSubtitle": "Подключение к API управления сервером для управления пользователями и клиентами.",
+  "adminUrlLabel": "URL администратора",
+  "adminTokenLabel": "Bearer-токен",
+  "adminSkipVerifyLabel": "Пропустить проверку TLS",
+  "adminSkipVerifySubtitle": "Для самоподписанных сертификатов",
+  "saveAdminSettings": "Сохранить настройки Admin",
+  "adminSettingsSaved": "Настройки Admin сохранены",
+  "adminTooltip": "Администратор",
+
+  "usersTab": "Пользователи",
+  "clientsTab": "Клиенты",
+  "serverTab": "Сервер",
+
+  "addUserButton": "Добавить",
+  "addUserDialogTitle": "Добавить пользователя",
+  "usernameLabel": "Имя пользователя",
+  "passwordLabel": "Пароль",
+  "newPasswordLabel": "Новый пароль",
+  "cancelButton": "Отмена",
+  "createButton": "Создать",
+  "updateButton": "Обновить",
+  "deleteButton": "Удалить",
+  "retryButton": "Повторить",
+
+  "changePasswordTitle": "Сменить пароль для \"{username}\"",
+  "@changePasswordTitle": {
+    "placeholders": {
+      "username": { "type": "String" }
+    }
+  },
+
+  "deleteUserTitle": "Удалить пользователя",
+  "deleteUserMessage": "Удалить пользователя \"{username}\"? Это действие нельзя отменить.",
+  "@deleteUserMessage": {
+    "placeholders": {
+      "username": { "type": "String" }
+    }
+  },
+
+  "changePasswordMenuItem": "Сменить пароль",
+  "enableMenuItem": "Включить",
+  "disableMenuItem": "Отключить",
+  "deleteMenuItem": "Удалить",
+
+  "noUsersFound": "Пользователи не найдены",
+  "passwordUpdated": "Пароль обновлён",
+
+  "disconnectClientTitle": "Отключить клиента",
+  "disconnectClientMessage": "Отключить \"{username}\" ({ip})?",
+  "@disconnectClientMessage": {
+    "placeholders": {
+      "username": { "type": "String" },
+      "ip": { "type": "String" }
+    }
+  },
+  "disconnectButton": "Отключить",
+  "noClientsConnected": "Нет подключённых клиентов",
+
+  "statusLabel": "Статус",
+  "versionLabel": "Версия",
+  "uptimeLabel": "Время работы",
+  "clientsLabel": "Клиентов",
+  "listenLabel": "Адрес",
+  "generateQrButton": "Создать QR для клиента",
+
+  "adminQrScreenTitle": "Создать QR для клиента",
+  "qrWarning": "Этот QR-код содержит пароль пользователя. Передавайте только по защищённому каналу.",
+  "clientConfigSection": "Конфигурация клиента",
+  "serverLabel": "Сервер (ip:port)",
+  "serverKeyLabel": "Ключ сервера",
+  "sniLabel": "SNI домен (необязательно)",
+  "transportLabel": "Транспорт",
+  "userCredentialsSection": "Учётные данные пользователя",
+  "passwordHelperText": "Введите пароль, установленный для этого пользователя",
+  "fillRequiredFields": "Заполните все обязательные поля\nдля генерации QR",
+  "copyConfigJson": "Скопировать конфиг JSON",
+  "configJsonCopied": "Конфиг JSON скопирован",
+  "qrTooLarge": "QR слишком большой — уменьшите длину полей"
+}
