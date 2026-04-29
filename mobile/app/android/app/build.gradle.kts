@@ -32,6 +32,10 @@ android {
         }
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     // AAR from gomobile
     repositories {
         flatDir {
@@ -46,4 +50,5 @@ flutter {
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
+    testImplementation("junit:junit:4.13.2")
 }

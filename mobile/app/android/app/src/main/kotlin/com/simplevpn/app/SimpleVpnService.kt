@@ -14,6 +14,7 @@ import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import vpnlib.Vpnlib
 
 class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
@@ -31,17 +32,131 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         const val NOTIFICATION_ID = 1
         const val CHANNEL_ID = "simplevpn_channel"
 
+        const val DEFAULT_MAX_RETRIES = 5
+        const val DEFAULT_MAX_BACKOFF_SECONDS = 60
+
         var currentStatus: String = "disconnected"
         private var vpnInterface: ParcelFileDescriptor? = null
         private var configJson: String? = null
         private var autoReconnect: Boolean = false
         private var killSwitch: Boolean = false
         private var connectThread: Thread? = null
+        private var maxRetries: Int = DEFAULT_MAX_RETRIES
+        private var maxBackoffSeconds: Int = DEFAULT_MAX_BACKOFF_SECONDS
+
+        /**
+         * Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, then capped at maxBackoffSeconds.
+         * Pure function — exposed at companion scope so unit tests can call it directly.
+         */
+        @JvmStatic
+        fun calculateBackoff(attempt: Int, maxBackoffSeconds: Int = DEFAULT_MAX_BACKOFF_SECONDS): Long {
+            if (attempt <= 0) return 1000L
+            // Cap shift count to avoid overflow on absurd inputs.
+            val capped = attempt.coerceAtMost(30)
+            val base = (1L shl capped) * 1000L
+            return base.coerceAtMost(maxBackoffSeconds * 1000L)
+        }
+
+        /**
+         * Outcome of the retry-policy decision. Pure data — no side effects.
+         */
+        data class RetryDecision(
+            /** Schedule another connect attempt? */
+            val shouldRetry: Boolean,
+            /** Delay before firing the retry (ms). Only meaningful when shouldRetry. */
+            val delayMs: Long,
+            /** Attempt counter to record (1-based). Only meaningful when shouldRetry. */
+            val nextAttempt: Int,
+            /** Latch retryStopped=true after this decision? Auth/fatal/exhausted set this. */
+            val latchStopped: Boolean,
+            /** Status string to surface (e.g. "connecting (retry 2/5)" or "error: auth rejected"). */
+            val statusOverride: String?,
+            /** Reason tag for logs/metrics. */
+            val reason: String,
+        )
+
+        /**
+         * Pure retry-policy decision based on the most recent error kind from vpnlib
+         * and the current retry-state. Side-effect-free — caller applies the decision
+         * (set status, increment counter, postDelayed, etc.).
+         *
+         * Contract — this is the auth-short-circuit and max-retries logic that Phase 4
+         * Task 3 requires. Patches `2026-03-09-15.10` and `2026-03-09-18.30` are not
+         * regressed because no establish() / TUN handling lives here.
+         *
+         *   - autoReconnect=false → never retry.
+         *   - retryStopped=true   → never retry (latched off by prior auth/fatal/exhausted).
+         *   - kind="auth"         → no retry, latch stopped, status="error: auth rejected".
+         *   - kind="fatal"        → no retry, latch stopped, status preserved.
+         *   - kind="none"         → no retry (clean disconnect from user).
+         *   - kind="transient"    → retry if currentAttempt+1 ≤ maxRetries; else latch stopped.
+         *   - any unknown kind treated as transient.
+         */
+        @JvmStatic
+        fun decideRetry(
+            autoReconnect: Boolean,
+            retryStopped: Boolean,
+            kind: String,
+            currentAttempt: Int,
+            maxRetries: Int,
+            maxBackoffSeconds: Int,
+            immediate: Boolean = false,
+        ): RetryDecision {
+            if (!autoReconnect) {
+                return RetryDecision(false, 0L, currentAttempt, false, null, "auto-reconnect-disabled")
+            }
+            if (retryStopped) {
+                return RetryDecision(false, 0L, currentAttempt, true, null, "already-stopped")
+            }
+            when (kind) {
+                "auth" -> return RetryDecision(
+                    shouldRetry = false, delayMs = 0L, nextAttempt = currentAttempt,
+                    latchStopped = true,
+                    statusOverride = "error: auth rejected",
+                    reason = "auth-rejected",
+                )
+                "fatal" -> return RetryDecision(
+                    shouldRetry = false, delayMs = 0L, nextAttempt = currentAttempt,
+                    latchStopped = true,
+                    statusOverride = null,
+                    reason = "fatal",
+                )
+                "none" -> return RetryDecision(
+                    shouldRetry = false, delayMs = 0L, nextAttempt = currentAttempt,
+                    latchStopped = false,
+                    statusOverride = null,
+                    reason = "clean-disconnect",
+                )
+                // "transient" or unknown → fall through to the retry path
+            }
+            val nextAttempt = currentAttempt + 1
+            if (nextAttempt > maxRetries) {
+                return RetryDecision(
+                    shouldRetry = false, delayMs = 0L, nextAttempt = currentAttempt,
+                    latchStopped = true,
+                    statusOverride = "error: max retries exceeded",
+                    reason = "max-retries-exceeded",
+                )
+            }
+            val delay = if (immediate) 0L else calculateBackoff(nextAttempt, maxBackoffSeconds)
+            return RetryDecision(
+                shouldRetry = true, delayMs = delay, nextAttempt = nextAttempt,
+                latchStopped = false,
+                statusOverride = "connecting (retry $nextAttempt/$maxRetries)",
+                reason = "retry-transient",
+            )
+        }
     }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
-    private var reconnectAttempt: Int = 0
-    private val maxReconnectDelay: Long = 60_000 // 60 seconds max
+
+    // Atomic so the connect-thread (writes), main-looper retry runnables (reads),
+    // and network callbacks (reads) can race without locks.
+    private val reconnectAttempt = AtomicInteger(0)
+
+    // Set to true after auth/fatal classification or maxRetries exhaustion.
+    // Latches off the retry loop until the next user-initiated Connect.
+    private val retryStopped = AtomicBoolean(false)
 
     // [FIX] Prevent concurrent connect() calls and debounce network callbacks
     private val isConnecting = AtomicBoolean(false)
@@ -73,7 +188,14 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         }
         autoReconnect = intent.getBooleanExtra("auto_reconnect", false)
         killSwitch = intent.getBooleanExtra("kill_switch", false)
-        Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect, killSwitch=$killSwitch")
+        maxRetries = intent.getIntExtra("max_retries", DEFAULT_MAX_RETRIES)
+        maxBackoffSeconds = intent.getIntExtra("max_backoff_seconds", DEFAULT_MAX_BACKOFF_SECONDS)
+        Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect, " +
+                "killSwitch=$killSwitch, maxRetries=$maxRetries, maxBackoffSeconds=$maxBackoffSeconds")
+
+        // User-initiated start — clear any stop-latch from previous session.
+        retryStopped.set(false)
+        reconnectAttempt.set(0)
 
         connect(configJson!!)
         return START_STICKY
@@ -154,6 +276,12 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                     val fd = vpnInterface!!.fd
                     Log.i(TAG, "TUN interface created, fd=$fd assigned=$prefix")
 
+                    // Reaching here means Preflight + establish succeeded; the connection
+                    // is effectively up. Reset retry state so a subsequent transient drop
+                    // starts the backoff at attempt 1.
+                    reconnectAttempt.set(0)
+                    Log.d(TAG, "Connection established — reset retry counter")
+
                     // RunTunnel blocks until the tunnel closes.
                     Log.d(TAG, "Calling Vpnlib.runTunnel(fd=$fd)")
                     Vpnlib.runTunnel(fd.toLong())
@@ -167,15 +295,30 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                     isConnecting.set(false)
                     Log.d(TAG, "[FIX] isConnecting released")
 
-                    Log.d(TAG, "Connect thread finished, cleaning up (killSwitch=$killSwitch)")
-                    if (killSwitch) {
+                    val retryScheduled = scheduleRetryIfNeeded()
+                    Log.d(TAG, "Connect thread finished: retryScheduled=$retryScheduled killSwitch=$killSwitch")
+
+                    if (retryScheduled) {
+                        // Keep service alive; status was set to "connecting (retry N/M)".
+                        // [FIX/Patch 2026-03-09-18.30] Close the existing TUN before next
+                        // connect() establishes a new one. Task 9 will switch to TUN reuse
+                        // when killSwitch=true; for now, killSwitch keeps TUN open and the
+                        // next connect() will see Go-status=disconnected and proceed.
+                        if (!killSwitch) {
+                            vpnInterface?.close()
+                            vpnInterface = null
+                        }
+                        updateNotification("Reconnecting...")
+                    } else if (killSwitch) {
                         Log.i(TAG, "Kill switch active — keeping TUN interface to block traffic")
                         updateNotification("VPN disconnected — traffic blocked (kill switch)")
-                        currentStatus = "disconnected"
+                        if (!currentStatus.startsWith("error:")) {
+                            currentStatus = "disconnected"
+                        }
                     } else {
                         vpnInterface?.close()
                         vpnInterface = null
-                        if (currentStatus != "disconnected") {
+                        if (!currentStatus.startsWith("error:")) {
                             currentStatus = "disconnected"
                         }
                         updateNotification("Disconnected")
@@ -189,7 +332,9 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             // Status stays "connecting" until Go-side confirms via Vpnlib.status()
             Log.i(TAG, "VPN tunnel thread started, status remains 'connecting' until Go confirms")
             updateNotification("Connecting...")
-            reconnectAttempt = 0
+            // (retry counter is reset on user-initiated start in onStartCommand and on
+            // successful establish() inside the connect-thread; do not reset here or
+            // retry-initiated reconnects would clobber the attempt count.)
 
             if (autoReconnect && networkCallback == null) {
                 setupNetworkMonitoring()
@@ -204,6 +349,10 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
     private fun disconnect() {
         Log.i(TAG, "Disconnecting VPN")
+
+        // Latch the retry loop off — any in-flight RunTunnel that returns after
+        // this point will see retryStopped=true and not schedule another attempt.
+        retryStopped.set(true)
 
         removeNetworkMonitoring()
 
@@ -235,24 +384,25 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.i(TAG, "[FIX] Network available, debouncing reconnect check")
-                // [FIX] Debounce: cancel any pending reconnect and schedule a new one after 500ms
-                // This prevents flood of reconnects during rapid network changes (WiFi↔cellular)
+                // [FIX/Patch 2026-03-09-18.30] Debounce 500ms so rapid WiFi↔cellular
+                // flapping doesn't spawn a flood of reconnects.
+                if (retryStopped.get()) {
+                    Log.i(TAG, "Retry loop stopped (auth/fatal/exhausted) — ignoring onAvailable")
+                    return
+                }
                 pendingReconnect?.let { reconnectHandler.removeCallbacks(it) }
                 pendingReconnect = Runnable {
-                    Log.i(TAG, "[FIX] Debounced reconnect check executing")
-                    if (!isGoConnected() && configJson != null) {
-                        val delay = calculateBackoff()
-                        Log.i(TAG, "Auto-reconnecting in ${delay}ms (attempt $reconnectAttempt)")
-                        updateNotification("Reconnecting in ${delay / 1000}s...")
-                        // [FIX] Use handler.postDelayed instead of spawning threads
-                        reconnectHandler.postDelayed({
-                            if (!isGoConnected() && configJson != null) {
-                                reconnectAttempt++
-                                connect(configJson!!)
-                            }
-                        }, delay)
+                    Log.i(TAG, "[FIX] Debounced onAvailable executing")
+                    // [FIX/Patch 2026-03-09-15.10] Use Go-side status as source of truth.
+                    // onAvailable fires during VPN establishment too — never reconnect
+                    // if Go reports we're already up.
+                    if (!isGoConnected() && configJson != null && !retryStopped.get()) {
+                        // Network came back during a backoff window — fire the retry now
+                        // instead of waiting out the backoff.
+                        Log.i(TAG, "Network available — firing pending retry early")
+                        scheduleRetryIfNeeded(immediate = true)
                     } else {
-                        Log.i(TAG, "Network available but VPN still active — no reconnect needed")
+                        Log.d(TAG, "onAvailable: Go connected or stop-latched — no action")
                     }
                 }
                 reconnectHandler.postDelayed(pendingReconnect!!, 500)
@@ -260,10 +410,13 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
             override fun onLost(network: Network) {
                 Log.i(TAG, "Network lost, checking Go-side VPN status")
-                // Don't blindly set disconnected — the VPN tunnel may still be alive.
-                // VPN establishment itself triggers onLost for the physical network.
+                // [FIX/Patch 2026-03-09-15.10] VPN establishment itself triggers
+                // onLost for the physical network. Don't flip status to disconnected
+                // unless Go agrees the tunnel is down.
                 if (!isGoConnected()) {
-                    currentStatus = "disconnected"
+                    if (!currentStatus.startsWith("error:") && !currentStatus.startsWith("connecting")) {
+                        currentStatus = "disconnected"
+                    }
                     updateNotification("Waiting for network...")
                 } else {
                     Log.i(TAG, "Network lost but Go tunnel still active — ignoring")
@@ -275,10 +428,92 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         Log.i(TAG, "Network monitoring enabled for auto-reconnect")
     }
 
-    private fun calculateBackoff(): Long {
-        // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, 60s max
-        val delay = (1000L * (1L shl reconnectAttempt.coerceAtMost(5))).coerceAtMost(maxReconnectDelay)
-        return delay
+    /**
+     * Decide whether to schedule another connect attempt after the current one
+     * exited (success-disconnect, transient error, auth rejection, or fatal).
+     *
+     * Consults [Vpnlib.lastErrorKind] to drive the decision:
+     *   - "auth"      → latch [retryStopped], no further attempts (status=auth rejected)
+     *   - "fatal"     → latch [retryStopped], no further attempts
+     *   - "transient" → schedule next attempt with exponential backoff if attempt < maxRetries
+     *   - "none"      → clean disconnect, no retry
+     *
+     * Returns true if a retry was scheduled (caller should keep service alive),
+     * false otherwise (caller should stop or hold per kill-switch policy).
+     *
+     * @param immediate If true, fire the retry on the next loop tick instead of
+     *   waiting for the full backoff. Used by [setupNetworkMonitoring]'s
+     *   onAvailable to short-circuit the wait when network comes back.
+     */
+    private fun scheduleRetryIfNeeded(immediate: Boolean = false): Boolean {
+        val kind = try {
+            Vpnlib.lastErrorKind()
+        } catch (e: Exception) {
+            Log.w(TAG, "Vpnlib.lastErrorKind() failed: ${e.message} — defaulting to transient")
+            "transient"
+        }
+
+        val decision = decideRetry(
+            autoReconnect = autoReconnect,
+            retryStopped = retryStopped.get(),
+            kind = kind,
+            currentAttempt = reconnectAttempt.get(),
+            maxRetries = maxRetries,
+            maxBackoffSeconds = maxBackoffSeconds,
+            immediate = immediate,
+        )
+        Log.i(TAG, "scheduleRetry decision: $decision (kind=$kind)")
+
+        if (decision.latchStopped) retryStopped.set(true)
+        decision.statusOverride?.let {
+            // Don't trample an existing fatal-error status with a generic one.
+            if (decision.reason == "fatal" && currentStatus.startsWith("error:")) {
+                // Keep currentStatus as the more-specific Go-side error message.
+            } else {
+                currentStatus = it
+            }
+        }
+
+        if (!decision.shouldRetry) {
+            when (decision.reason) {
+                "auth-rejected" -> updateNotification("VPN error: authentication rejected")
+                "fatal" -> updateNotification("VPN error: fatal")
+                "max-retries-exceeded" -> updateNotification("VPN error: max retries exceeded")
+                else -> { /* clean-disconnect / autoreconnect-off / already-stopped: caller updates */ }
+            }
+            return false
+        }
+
+        // Persist the new attempt counter for follow-up callbacks (onAvailable etc.).
+        reconnectAttempt.set(decision.nextAttempt)
+
+        updateNotification(
+            if (immediate) "Reconnecting (attempt ${decision.nextAttempt}/$maxRetries)..."
+            else "Reconnecting in ${decision.delayMs / 1000}s (attempt ${decision.nextAttempt}/$maxRetries)"
+        )
+        Log.i(TAG, "Scheduling retry ${decision.nextAttempt}/$maxRetries in ${decision.delayMs}ms (kind=$kind, immediate=$immediate)")
+
+        // Cancel any outstanding pending reconnect to avoid double-fire.
+        pendingReconnect?.let { reconnectHandler.removeCallbacks(it) }
+        pendingReconnect = Runnable {
+            // [FIX/Patch 2026-03-09-18.30] Re-check Go status before establish().
+            // If Go came back to "connected" via some other path, never call establish() again.
+            if (retryStopped.get()) {
+                Log.i(TAG, "Retry runnable: stop-latched, aborting")
+                return@Runnable
+            }
+            if (configJson == null) {
+                Log.w(TAG, "Retry runnable: configJson is null, aborting")
+                return@Runnable
+            }
+            if (isGoConnected()) {
+                Log.i(TAG, "Retry runnable: Go already connected, skipping connect()")
+                return@Runnable
+            }
+            connect(configJson!!)
+        }
+        reconnectHandler.postDelayed(pendingReconnect!!, decision.delayMs)
+        return true
     }
 
     private fun removeNetworkMonitoring() {
