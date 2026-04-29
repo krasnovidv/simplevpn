@@ -118,6 +118,35 @@ func SetProtector(p SocketProtector) {
 	log.Printf("[vpnlib] Socket protector set: %v", p != nil)
 }
 
+// errKind classifies the most recent error so the platform layer can decide
+// whether to retry. The platform owns retry policy; vpnlib only categorizes.
+//
+//   - kindNone:      no error since last Connect/Preflight
+//   - kindTransient: network error, dial failure, RST, relay error — retry with backoff
+//   - kindAuth:      server rejected credentials (HTTP 401 or "auth rejected" auth-line) — do not retry
+//   - kindFatal:     TLS handshake permanent failure, malformed config, programmer error — do not retry
+type errKind int
+
+const (
+	kindNone errKind = iota
+	kindTransient
+	kindAuth
+	kindFatal
+)
+
+func (k errKind) String() string {
+	switch k {
+	case kindTransient:
+		return "transient"
+	case kindAuth:
+		return "auth"
+	case kindFatal:
+		return "fatal"
+	default:
+		return "none"
+	}
+}
+
 // state holds the current connection state.
 type state struct {
 	mu             sync.Mutex
@@ -127,6 +156,7 @@ type state struct {
 	stopCh         chan struct{}
 	status         string
 	assignedPrefix netip.Prefix // IP assigned by server, e.g. "10.0.0.2/24"
+	lastKind       errKind      // most recent error classification (see errKind)
 
 	// Pending preflight state — valid between Preflight() and RunTunnel() calls.
 	pendingBC         *bufConn     // authenticated + bufio-wrapped connection
@@ -187,6 +217,8 @@ func Connect(configJSON string, fd int) error {
 	defer connectMu.Unlock()
 	log.Printf("[FIX] Connect mutex acquired")
 
+	resetLastKind()
+
 	current.mu.Lock()
 	if current.connected {
 		current.mu.Unlock()
@@ -202,6 +234,7 @@ func Connect(configJSON string, fd int) error {
 	var cfg Config
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
 		log.Printf("[vpnlib] ERROR: failed to parse config JSON: %v", err)
+		setLastKind(kindFatal, "config-parse", err)
 		setStatus("error: bad config: " + err.Error())
 		return fmt.Errorf("parse config: %w", err)
 	}
@@ -216,6 +249,7 @@ func Connect(configJSON string, fd int) error {
 
 	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
 		log.Printf("[vpnlib] ERROR: server, server_key, username, and password are all required")
+		setLastKind(kindFatal, "config-validate", nil)
 		setStatus("error: server, server_key, username, and password are required")
 		return fmt.Errorf("server, server_key, username, and password are required")
 	}
@@ -225,6 +259,7 @@ func Connect(configJSON string, fd int) error {
 	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: derive keys: %v", err)
+		setLastKind(kindFatal, "derive-keys", err)
 		setStatus("error: derive keys: " + err.Error())
 		return fmt.Errorf("derive keys: %w", err)
 	}
@@ -235,6 +270,7 @@ func Connect(configJSON string, fd int) error {
 	tunFile := os.NewFile(uintptr(fd), "tun")
 	if tunFile == nil {
 		log.Printf("[vpnlib] ERROR: os.NewFile returned nil for fd=%d", fd)
+		setLastKind(kindFatal, "tun-fd", nil)
 		setStatus("error: invalid tun fd")
 		return fmt.Errorf("invalid tun fd: %d", fd)
 	}
@@ -269,6 +305,7 @@ func Connect(configJSON string, fd int) error {
 	dialer, err := transport.NewDialer(tt, fp)
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: create transport dialer: %v", err)
+		setLastKind(kindFatal, "transport-create", err)
 		setStatus("error: transport: " + err.Error())
 		return fmt.Errorf("create transport: %w", err)
 	}
@@ -322,6 +359,7 @@ func Connect(configJSON string, fd int) error {
 	conn, err := dialer.Dial(ctx, dialCfg)
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: transport dial failed: %v", err)
+		setLastKind(classifyDialErr(err), "dial", err)
 		setStatus("error: connect: " + err.Error())
 		return fmt.Errorf("transport dial: %w", err)
 	}
@@ -333,6 +371,7 @@ func Connect(configJSON string, fd int) error {
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: generate credential frame: %v", err)
 		conn.Close()
+		setLastKind(kindFatal, "auth-gen", err)
 		setStatus("error: auth gen: " + err.Error())
 		return fmt.Errorf("generate credentials: %w", err)
 	}
@@ -341,6 +380,7 @@ func Connect(configJSON string, fd int) error {
 	if _, err := conn.Write(credFrame); err != nil {
 		log.Printf("[vpnlib] ERROR: send credentials: %v", err)
 		conn.Close()
+		setLastKind(kindTransient, "auth-send", err)
 		setStatus("error: auth send: " + err.Error())
 		return fmt.Errorf("send credentials: %w", err)
 	}
@@ -356,6 +396,7 @@ func Connect(configJSON string, fd int) error {
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: reading auth response line: %v", err)
 		conn.Close()
+		setLastKind(kindTransient, "auth-response", err)
 		setStatus("error: auth response: " + err.Error())
 		return fmt.Errorf("auth response: %w", err)
 	}
@@ -366,6 +407,7 @@ func Connect(configJSON string, fd int) error {
 	if !strings.HasPrefix(line, "OK ") {
 		log.Printf("[vpnlib] ERROR: auth rejected (response=%q)", line)
 		conn.Close()
+		setLastKind(kindAuth, "auth-rejected", nil)
 		setStatus("error: auth rejected")
 		return fmt.Errorf("auth rejected: %s", line)
 	}
@@ -374,6 +416,7 @@ func Connect(configJSON string, fd int) error {
 	if err != nil {
 		log.Printf("[vpnlib] ERROR: parse assigned prefix %q: %v", line, err)
 		conn.Close()
+		setLastKind(kindFatal, "assigned-prefix", err)
 		setStatus("error: bad assigned prefix")
 		return fmt.Errorf("parse assigned prefix: %w", err)
 	}
@@ -406,6 +449,7 @@ func Connect(configJSON string, fd int) error {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[FIX] Panic in TUN→Transport goroutine: %v", r)
+				setLastKind(kindFatal, "tun-reader-panic", nil)
 				setStatus("error: tun reader panic")
 			}
 		}()
@@ -460,6 +504,7 @@ func Connect(configJSON string, fd int) error {
 		if err != nil {
 			log.Printf("[vpnlib] Recv error (after %d packets): %v", recvCount, err)
 			cleanup(conn, tunFile)
+			setLastKind(kindTransient, "recv", err)
 			setStatus("error: recv: " + err.Error())
 			return err
 		}
@@ -467,6 +512,7 @@ func Connect(configJSON string, fd int) error {
 		if _, err := tunFile.Write(plaintext); err != nil {
 			log.Printf("[vpnlib] TUN write error (after %d packets): %v", recvCount, err)
 			cleanup(conn, tunFile)
+			setLastKind(kindTransient, "tun-write", err)
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}
@@ -486,6 +532,8 @@ func Preflight(configJSON string) string {
 	connectMu.Lock()
 	log.Printf("[vpnlib] Preflight: connectMu acquired")
 
+	resetLastKind()
+
 	unlockOnce := &sync.Once{}
 
 	current.mu.Lock()
@@ -502,12 +550,14 @@ func Preflight(configJSON string) string {
 
 	var cfg Config
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
+		setLastKind(kindFatal, "config-parse", err)
 		setStatus("error: bad config: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: bad config: " + err.Error()
 	}
 
 	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
+		setLastKind(kindFatal, "config-validate", nil)
 		setStatus("error: missing required fields")
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: server, server_key, username, and password are required"
@@ -515,6 +565,7 @@ func Preflight(configJSON string) string {
 
 	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
 	if err != nil {
+		setLastKind(kindFatal, "derive-keys", err)
 		setStatus("error: derive keys: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: derive keys: " + err.Error()
@@ -538,6 +589,7 @@ func Preflight(configJSON string) string {
 
 	dialer, err := transport.NewDialer(tt, fp)
 	if err != nil {
+		setLastKind(kindFatal, "transport-create", err)
 		setStatus("error: transport: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: transport: " + err.Error()
@@ -580,6 +632,7 @@ func Preflight(configJSON string) string {
 
 	conn, err := dialer.Dial(ctx, dialCfg)
 	if err != nil {
+		setLastKind(classifyDialErr(err), "dial", err)
 		setStatus("error: connect: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: connect: " + err.Error()
@@ -589,12 +642,14 @@ func Preflight(configJSON string) string {
 	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
 	if err != nil {
 		conn.Close()
+		setLastKind(kindFatal, "auth-gen", err)
 		setStatus("error: auth gen: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: auth gen: " + err.Error()
 	}
 	if _, err := conn.Write(credFrame); err != nil {
 		conn.Close()
+		setLastKind(kindTransient, "auth-send", err)
 		setStatus("error: auth send: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: auth send: " + err.Error()
@@ -606,6 +661,7 @@ func Preflight(configJSON string) string {
 	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		conn.Close()
+		setLastKind(kindTransient, "auth-response", err)
 		setStatus("error: auth response: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: auth response: " + err.Error()
@@ -616,6 +672,7 @@ func Preflight(configJSON string) string {
 
 	if !strings.HasPrefix(line, "OK ") {
 		conn.Close()
+		setLastKind(kindAuth, "auth-rejected", nil)
 		setStatus("error: auth rejected")
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: auth rejected: " + line
@@ -624,6 +681,7 @@ func Preflight(configJSON string) string {
 	assignedPrefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
 	if err != nil {
 		conn.Close()
+		setLastKind(kindFatal, "assigned-prefix", err)
 		setStatus("error: bad assigned prefix")
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: bad assigned prefix: " + err.Error()
@@ -692,6 +750,7 @@ func RunTunnel(fd int) error {
 
 	tunFile := os.NewFile(uintptr(fd), "tun")
 	if tunFile == nil {
+		setLastKind(kindFatal, "tun-fd", nil)
 		setStatus("error: invalid tun fd")
 		return fmt.Errorf("invalid tun fd: %d", fd)
 	}
@@ -713,6 +772,7 @@ func RunTunnel(fd int) error {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("[FIX] Panic in TUN→Transport goroutine (RunTunnel): %v", r)
+				setLastKind(kindFatal, "tun-reader-panic", nil)
 				setStatus("error: tun reader panic")
 			}
 		}()
@@ -752,6 +812,7 @@ func RunTunnel(fd int) error {
 		if err != nil {
 			log.Printf("[vpnlib] RunTunnel Recv error (after %d pkts): %v", recvCount, err)
 			cleanup(bc, tunFile)
+			setLastKind(kindTransient, "recv", err)
 			setStatus("error: recv: " + err.Error())
 			return err
 		}
@@ -759,6 +820,7 @@ func RunTunnel(fd int) error {
 		if _, err := tunFile.Write(plaintext); err != nil {
 			log.Printf("[vpnlib] RunTunnel TUN write error: %v", err)
 			cleanup(bc, tunFile)
+			setLastKind(kindTransient, "tun-write", err)
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}
@@ -804,11 +866,66 @@ func Status() string {
 	return current.status
 }
 
+// LastErrorKind returns the most recent error classification:
+// "none" | "transient" | "auth" | "fatal". Reset to "none" on every
+// Connect()/Preflight() entry. Used by the platform retry loop to decide
+// whether to back off (transient) or stop retrying (auth/fatal).
+func LastErrorKind() string {
+	current.mu.Lock()
+	defer current.mu.Unlock()
+	return current.lastKind.String()
+}
+
 func setStatus(s string) {
 	current.mu.Lock()
 	current.status = s
 	current.mu.Unlock()
 	log.Printf("[vpnlib] Status -> %s", s)
+}
+
+// setLastKind transitions the lastKind state and emits a DEBUG line.
+// src is a short tag (e.g. "dial", "auth-response", "recv") so the log
+// shows where the classification came from.
+func setLastKind(k errKind, src string, cause error) {
+	current.mu.Lock()
+	prev := current.lastKind
+	current.lastKind = k
+	current.mu.Unlock()
+	if cause != nil {
+		log.Printf("[vpnlib] errKind %s -> %s (src=%s, cause=%v)", prev, k, src, cause)
+	} else {
+		log.Printf("[vpnlib] errKind %s -> %s (src=%s)", prev, k, src)
+	}
+}
+
+// resetLastKind clears the classification at the start of every Connect/Preflight.
+func resetLastKind() {
+	current.mu.Lock()
+	current.lastKind = kindNone
+	current.mu.Unlock()
+}
+
+// classifyDialErr classifies an error returned by transport.Dialer.Dial.
+// TLS/cert problems → fatal (won't fix on retry). HTTP 401 from the WS
+// upgrade → auth (creds rejected). Anything else → transient.
+func classifyDialErr(err error) errKind {
+	if err == nil {
+		return kindNone
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized"):
+		return kindAuth
+	case strings.Contains(msg, "x509") ||
+		strings.Contains(msg, "certificate") ||
+		strings.Contains(msg, "tls handshake") ||
+		strings.Contains(msg, "tls: handshake") ||
+		strings.Contains(msg, "bad certificate") ||
+		strings.Contains(msg, "unknown authority"):
+		return kindFatal
+	default:
+		return kindTransient
+	}
 }
 
 func cleanup(conn net.Conn, tunFile *os.File) {
