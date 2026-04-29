@@ -9,7 +9,7 @@
 
 MODULE := simplevpn/mobile/vpnlib
 
-.PHONY: all android ios clean install-android
+.PHONY: all android ios clean install-android install-ios
 
 all: android ios
 
@@ -34,6 +34,12 @@ ios:
 		-o build/Vpnlib.xcframework \
 		$(MODULE)
 	@echo "Output: build/Vpnlib.xcframework"
+
+# Build and install xcframework into Flutter app
+install-ios: ios
+	@echo "=== Installing xcframework into Flutter app ==="
+	cp -r build/Vpnlib.xcframework app/ios/Frameworks/Vpnlib.xcframework
+	@echo "Installed: app/ios/Frameworks/Vpnlib.xcframework"
 
 clean:
 	rm -rf build/

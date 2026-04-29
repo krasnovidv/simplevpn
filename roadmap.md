@@ -21,11 +21,11 @@
 - [x] 2.8 Admin settings in mobile app (URL, bearer token, skip-verify)
 - [x] 2.9 Tunnel write-mutex (fixes relay+keepalive concurrent-Send race)
 
-## Phase 3 — iOS client
+## Phase 3 — iOS client ✅
 
-- [ ] 3.1 iOS PacketTunnelProvider integration
-- [ ] 3.2 iOS Network Extension entitlements
-- [ ] 3.3 gomobile iOS build pipeline
+- [x] 3.1 iOS PacketTunnelProvider integration
+- [x] 3.2 iOS Network Extension entitlements
+- [x] 3.3 gomobile iOS build pipeline
 
 ## Phase 4 — Resilience & UX
 
@@ -42,4 +42,4 @@
 
 ---
 
-Phase 3 next.
+Phase 4 next.

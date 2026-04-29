@@ -55,6 +55,9 @@ class VpnPlugin: NSObject, FlutterPlugin {
             }
             setKillSwitch(enabled: enabled, result: result)
 
+        case "getLogs":
+            getLogs(result: result)
+
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -158,6 +161,27 @@ class VpnPlugin: NSObject, FlutterPlugin {
             case .disconnecting: result("disconnecting")
             case .disconnected: result("disconnected")
             default: result("unknown")
+            }
+        }
+    }
+
+    private func getLogs(result: @escaping FlutterResult) {
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+            guard let manager = managers?.first,
+                  let session = manager.connection as? NETunnelProviderSession,
+                  session.status == .connected,
+                  let data = "getLogs".data(using: .utf8) else {
+                // Extension not running or not connected — return empty string gracefully.
+                result("")
+                return
+            }
+            do {
+                try session.sendProviderMessage(data) { responseData in
+                    let logs = responseData.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    result(logs)
+                }
+            } catch {
+                result("")
             }
         }
     }
