@@ -186,6 +186,49 @@ final class PacketTunnelTests: XCTestCase {
         XCTAssertEqual(d.delaySecs, 60)  // backoff capped
     }
 
+    // MARK: - CIDR parser (parseCidrRoute)
+
+    func testCidrParser_validCidrs() {
+        // Should parse without returning nil.
+        let valid = ["0.0.0.0/0", "192.168.1.0/24", "10.0.0.5/32", "10.0.0.0/8", "172.16.0.0/12"]
+        for cidr in valid {
+            XCTAssertNotNil(PacketTunnelProvider.parseCidrRoute(cidr), "should parse: \(cidr)")
+        }
+    }
+
+    func testCidrParser_rejectsBogus() {
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("bogus"), "bogus should be rejected")
+    }
+
+    func testCidrParser_rejectsPrefixOver32() {
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("1.2.3.4/33"), "/33 should be rejected")
+    }
+
+    func testCidrParser_rejectsNegativePrefix() {
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("1.2.3.4/-1"), "negative prefix should be rejected")
+    }
+
+    func testCidrParser_rejectsIPv6() {
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("::1/128"), "IPv6 should be rejected")
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("2001:db8::/32"), "IPv6 CIDR should be rejected")
+    }
+
+    func testCidrParser_rejectsMissingSlash() {
+        XCTAssertNil(PacketTunnelProvider.parseCidrRoute("192.168.1.0"), "missing /n should be rejected")
+    }
+
+    func testCidrParser_slash32IsValid() {
+        let route = PacketTunnelProvider.parseCidrRoute("10.0.0.5/32")
+        XCTAssertNotNil(route, "/32 host route should be valid")
+        XCTAssertEqual(route?.destinationAddress, "10.0.0.5")
+        XCTAssertEqual(route?.destinationSubnetMask, "255.255.255.255")
+    }
+
+    func testCidrParser_slash0IsValid() {
+        let route = PacketTunnelProvider.parseCidrRoute("0.0.0.0/0")
+        XCTAssertNotNil(route, "/0 default route should be valid")
+    }
+
     // MARK: - Helpers (duplicated from PacketTunnelProvider for testability)
 
     private func prefixLenToMask(_ len: Int) -> String {

@@ -119,6 +119,20 @@ Check for network latency or an unresponsive server.
 If you still see EMSGSIZE on-device, switch `PacketTunnelProvider` to `SOCK_STREAM`
 with a 2-byte length prefix.
 
+## Split Tunneling (Phase 4)
+
+iOS split tunneling uses CIDR routes applied to `NEPacketTunnelNetworkSettings`:
+
+| Mode | Implementation | Effect |
+|------|---------------|--------|
+| **Allowlist** | `ipv4Settings.includedRoutes = [parsed CIDRs]` | Only specified subnets route through VPN |
+| **Blocklist** | `ipv4Settings.excludedRoutes = [parsed CIDRs]` | Specified subnets bypass VPN |
+| **Off** | `includedRoutes = [NEIPv4Route.default()]` | All traffic through VPN (default) |
+
+**Important:** an empty allowlist with mode=`allowlist` falls back to full tunnel (treated as `off`) to prevent traffic black-holing.
+
+**Kill switch limitation:** `includeAllNetworks` requires iOS 14.2+. On older versions the kill switch is unavailable and the app emits an `unsupported_kill_switch` status to the UI.
+
 ## Bundle IDs
 
 | Target | Bundle ID |

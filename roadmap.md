@@ -27,12 +27,12 @@
 - [x] 3.2 iOS Network Extension entitlements
 - [x] 3.3 gomobile iOS build pipeline
 
-## Phase 4 — Resilience & UX
+## Phase 4 — Resilience & UX ✅
 
-- [ ] 4.1 Auto-reconnect with exponential backoff
-- [ ] 4.2 Kill switch (block non-VPN traffic on disconnect)
-- [ ] 4.3 Split tunneling configuration
-- [ ] 4.4 Traffic statistics UI (bytes in/out per session)
+- [x] 4.1 Auto-reconnect with exponential backoff (Android max-retries + auth short-circuit, iOS Swift backoff loop)
+- [x] 4.2 Kill switch (block non-VPN traffic on disconnect; iOS 14.2+ includeAllNetworks, Android TUN reuse)
+- [x] 4.3 Split tunneling configuration (Android per-app, iOS per-route CIDR)
+- [x] 4.4 Traffic statistics UI (bytes in/out per session, 60 s sparkline)
 
 ## Phase 5 — Distribution
 
@@ -42,4 +42,4 @@
 
 ---
 
-Phase 4 next.
+Phase 5 next.

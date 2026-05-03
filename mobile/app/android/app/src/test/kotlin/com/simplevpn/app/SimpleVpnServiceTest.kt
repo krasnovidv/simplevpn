@@ -1,5 +1,6 @@
 package com.simplevpn.app
 
+import com.simplevpn.app.SimpleVpnService.Companion.applySplitTunnelRules
 import com.simplevpn.app.SimpleVpnService.Companion.calculateBackoff
 import com.simplevpn.app.SimpleVpnService.Companion.decideRetry
 import org.junit.Assert.assertEquals
@@ -187,5 +188,59 @@ class SimpleVpnServiceTest {
     fun decideRetry_noneDoesNotOverrideStatus() {
         val d = decideRetry(true, false, "none", 0, 5, 60)
         assertNull(d.statusOverride)
+    }
+
+    // -------- applySplitTunnelRules ----------------------------------------
+
+    @Test
+    fun splitTunnel_offMode_callsNoRules() {
+        val allowed = mutableListOf<String>()
+        val disallowed = mutableListOf<String>()
+        applySplitTunnelRules("off", listOf("com.example.app"), "com.simplevpn.app",
+            { allowed.add(it) }, { disallowed.add(it) })
+        assertTrue("off mode must not add allowed rules", allowed.isEmpty())
+        assertTrue("off mode must not add disallowed rules", disallowed.isEmpty())
+    }
+
+    @Test
+    fun splitTunnel_allowlistMode_addsAllApps() {
+        val allowed = mutableListOf<String>()
+        val disallowed = mutableListOf<String>()
+        val apps = listOf("com.a", "com.b", "com.c")
+        applySplitTunnelRules("allowlist", apps, "com.simplevpn.app",
+            { allowed.add(it) }, { disallowed.add(it) })
+        assertTrue("disallowed must be empty in allowlist mode", disallowed.isEmpty())
+        for (pkg in apps) assertTrue("$pkg must be in allowed list", allowed.contains(pkg))
+        // Own package must also be added.
+        assertTrue("own package must be in allowed list", allowed.contains("com.simplevpn.app"))
+    }
+
+    @Test
+    fun splitTunnel_allowlistMode_doesNotDuplicateOwnPackage() {
+        val allowed = mutableListOf<String>()
+        val apps = listOf("com.simplevpn.app", "com.other")
+        applySplitTunnelRules("allowlist", apps, "com.simplevpn.app",
+            { allowed.add(it) }, {})
+        assertEquals("own pkg must appear exactly once", 1, allowed.count { it == "com.simplevpn.app" })
+    }
+
+    @Test
+    fun splitTunnel_blocklistMode_excludesAllAppsAndOwnPackage() {
+        val allowed = mutableListOf<String>()
+        val disallowed = mutableListOf<String>()
+        val apps = listOf("com.a", "com.b")
+        applySplitTunnelRules("blocklist", apps, "com.simplevpn.app",
+            { allowed.add(it) }, { disallowed.add(it) })
+        assertTrue("allowed must be empty in blocklist mode", allowed.isEmpty())
+        assertTrue("own package must be disallowed", disallowed.contains("com.simplevpn.app"))
+        for (pkg in apps) assertTrue("$pkg must be disallowed", disallowed.contains(pkg))
+    }
+
+    @Test
+    fun splitTunnel_blocklistMode_ownPackageFirst() {
+        val disallowed = mutableListOf<String>()
+        applySplitTunnelRules("blocklist", listOf("com.a"), "com.simplevpn.app",
+            {}, { disallowed.add(it) })
+        assertEquals("own package must be first disallowed entry", "com.simplevpn.app", disallowed.first())
     }
 }

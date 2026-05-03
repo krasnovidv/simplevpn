@@ -43,6 +43,8 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         private var connectThread: Thread? = null
         private var maxRetries: Int = DEFAULT_MAX_RETRIES
         private var maxBackoffSeconds: Int = DEFAULT_MAX_BACKOFF_SECONDS
+        private var splitTunnelMode: String = "off"
+        private var splitTunnelApps: List<String> = emptyList()
 
         /**
          * Exponential backoff: 1s, 2s, 4s, 8s, 16s, 32s, then capped at maxBackoffSeconds.
@@ -55,6 +57,38 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             val capped = attempt.coerceAtMost(30)
             val base = (1L shl capped) * 1000L
             return base.coerceAtMost(maxBackoffSeconds * 1000L)
+        }
+
+        /**
+         * Pure split-tunnel rule applicator. Side-effect-free — callers pass lambdas
+         * that perform the actual Builder calls (with exception handling).
+         *
+         * Contract:
+         *   mode="allowlist"  → addAllowed called for each app in [apps]; [ownPackage] is
+         *                       added if not already listed (ensures VPN control traffic routes
+         *                       through the tunnel).
+         *   mode="blocklist"  → addDisallowed called for [ownPackage] first, then each app.
+         *   mode="off" / any  → neither lambda is called.
+         */
+        @JvmStatic
+        fun applySplitTunnelRules(
+            mode: String,
+            apps: List<String>,
+            ownPackage: String,
+            addAllowed: (String) -> Unit,
+            addDisallowed: (String) -> Unit,
+        ) {
+            when (mode) {
+                "allowlist" -> {
+                    for (pkg in apps) addAllowed(pkg)
+                    if (!apps.contains(ownPackage)) addAllowed(ownPackage)
+                }
+                "blocklist" -> {
+                    addDisallowed(ownPackage)
+                    for (pkg in apps) addDisallowed(pkg)
+                }
+                // off: no rules applied
+            }
         }
 
         /**
@@ -148,6 +182,21 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         }
     }
 
+    private fun emitStructuredStatus(
+        state: String,
+        attempt: Int? = null,
+        max: Int? = null,
+        errorKind: String? = null,
+        errorMessage: String? = null,
+    ) {
+        val map = mutableMapOf<String, Any?>("state" to state)
+        attempt?.let { map["attempt"] = it }
+        max?.let { map["max"] = it }
+        errorKind?.let { map["errorKind"] = it }
+        errorMessage?.let { map["errorMessage"] = it }
+        VpnPlugin.emitStatus(map)
+    }
+
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // Atomic so the connect-thread (writes), main-looper retry runnables (reads),
@@ -190,8 +239,11 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         killSwitch = intent.getBooleanExtra("kill_switch", false)
         maxRetries = intent.getIntExtra("max_retries", DEFAULT_MAX_RETRIES)
         maxBackoffSeconds = intent.getIntExtra("max_backoff_seconds", DEFAULT_MAX_BACKOFF_SECONDS)
+        splitTunnelMode = intent.getStringExtra("split_tunnel_mode") ?: "off"
+        splitTunnelApps = intent.getStringArrayListExtra("split_tunnel_apps") ?: emptyList()
         Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect, " +
-                "killSwitch=$killSwitch, maxRetries=$maxRetries, maxBackoffSeconds=$maxBackoffSeconds")
+                "killSwitch=$killSwitch, maxRetries=$maxRetries, maxBackoffSeconds=$maxBackoffSeconds, " +
+                "splitMode=$splitTunnelMode, splitApps=${splitTunnelApps.size}")
 
         // User-initiated start — clear any stop-latch from previous session.
         retryStopped.set(false)
@@ -222,6 +274,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         try { Vpnlib.disconnect() } catch (_: Exception) {}
 
         currentStatus = "connecting"
+        emitStructuredStatus("connecting")
         val configPreview = if (config.length > 100) config.take(100) + "..." else config
         Log.i(TAG, "Starting VPN connection, config length=${config.length}")
         Log.d(TAG, "Config preview (may contain masked data): $configPreview")
@@ -254,32 +307,60 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
                     Log.i(TAG, "Preflight OK, assigned=$prefix")
 
-                    // Build TUN with the server-assigned IP.
-                    val builder = Builder()
-                        .setSession("SimpleVPN")
-                        .addAddress(ip, prefixLen)
-                        .addRoute("0.0.0.0", 0)
-                        .addDnsServer("1.1.1.1")
-                        .addDnsServer("8.8.8.8")
-                        .setMtu(1380)
-                        .setBlocking(true)
+                    // [Patch 2026-03-09-18.30] When kill switch is active and we already have
+                    // a valid TUN, reuse its fd rather than calling builder.establish() again.
+                    // A second establish() would invalidate the live fd while Go is reading/writing
+                    // it, causing a native crash. The existing TUN continues to block all traffic
+                    // during the retry window — preserving the kill-switch guarantee.
+                    val fd: Int
+                    val existingIface = vpnInterface
+                    if (killSwitch && existingIface != null) {
+                        fd = existingIface.fd
+                        Log.d(TAG, "Kill-switch retry: reusing existing TUN fd=$fd (skipping establish)")
+                    } else {
+                        val builder = Builder()
+                            .setSession("SimpleVPN")
+                            .addAddress(ip, prefixLen)
+                            .addRoute("0.0.0.0", 0)
+                            .addDnsServer("1.1.1.1")
+                            .addDnsServer("8.8.8.8")
+                            .setMtu(1380)
+                            .setBlocking(true)
 
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        builder.setMetered(false)
-                    }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            builder.setMetered(false)
+                        }
 
-                    Log.d(TAG, "TUN builder: address=$prefix, routes=0.0.0.0/0, dns=1.1.1.1+8.8.8.8, mtu=1380")
-                    vpnInterface = builder.establish()
-                    if (vpnInterface == null) {
-                        throw Exception("Failed to create TUN interface (establish returned null)")
+                        // Apply split-tunnel rules via pure companion helper (testable without Android framework).
+                        val ownPkg = applicationContext.packageName
+                        Log.d(TAG, "Split-tunnel apply: mode=$splitTunnelMode apps=${splitTunnelApps.size} ownPkg=$ownPkg")
+                        applySplitTunnelRules(
+                            mode = splitTunnelMode,
+                            apps = splitTunnelApps,
+                            ownPackage = ownPkg,
+                            addAllowed = { pkg ->
+                                try { builder.addAllowedApplication(pkg); Log.d(TAG, "ST allowlist: +$pkg") }
+                                catch (e: Exception) { Log.w(TAG, "ST allowlist: skip $pkg — ${e.message}") }
+                            },
+                            addDisallowed = { pkg ->
+                                try { builder.addDisallowedApplication(pkg); Log.d(TAG, "ST blocklist: -$pkg") }
+                                catch (e: Exception) { Log.w(TAG, "ST blocklist: skip $pkg — ${e.message}") }
+                            },
+                        )
+
+                        Log.d(TAG, "TUN builder: address=$prefix, routes=0.0.0.0/0, dns=1.1.1.1+8.8.8.8, mtu=1380, splitMode=$splitTunnelMode")
+                        val iface = builder.establish()
+                            ?: throw Exception("Failed to create TUN interface (establish returned null)")
+                        vpnInterface = iface
+                        fd = iface.fd
+                        Log.i(TAG, "New TUN interface created, fd=$fd assigned=$prefix killSwitch=$killSwitch")
                     }
-                    val fd = vpnInterface!!.fd
-                    Log.i(TAG, "TUN interface created, fd=$fd assigned=$prefix")
 
                     // Reaching here means Preflight + establish succeeded; the connection
                     // is effectively up. Reset retry state so a subsequent transient drop
                     // starts the backoff at attempt 1.
                     reconnectAttempt.set(0)
+                    emitStructuredStatus("connected")
                     Log.d(TAG, "Connection established — reset retry counter")
 
                     // RunTunnel blocks until the tunnel closes.
@@ -310,11 +391,11 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                         }
                         updateNotification("Reconnecting...")
                     } else if (killSwitch) {
-                        Log.i(TAG, "Kill switch active — keeping TUN interface to block traffic")
+                        val fd = vpnInterface?.fd ?: -1
+                        Log.i(TAG, "Kill switch active — keeping TUN fd=$fd to block all traffic (final failure)")
                         updateNotification("VPN disconnected — traffic blocked (kill switch)")
-                        if (!currentStatus.startsWith("error:")) {
-                            currentStatus = "disconnected"
-                        }
+                        currentStatus = "error: blocked (kill switch)"
+                        emitStructuredStatus("error", errorKind = "fatal", errorMessage = "blocked (kill switch)")
                     } else {
                         vpnInterface?.close()
                         vpnInterface = null
@@ -367,6 +448,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         vpnInterface = null
         connectThread = null
         currentStatus = "disconnected"
+        emitStructuredStatus("disconnected")
         Log.d(TAG, "VPN disconnected, status=disconnected")
 
         stopForeground(STOP_FOREGROUND_REMOVE)
@@ -476,9 +558,18 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
         if (!decision.shouldRetry) {
             when (decision.reason) {
-                "auth-rejected" -> updateNotification("VPN error: authentication rejected")
-                "fatal" -> updateNotification("VPN error: fatal")
-                "max-retries-exceeded" -> updateNotification("VPN error: max retries exceeded")
+                "auth-rejected" -> {
+                    updateNotification("VPN error: authentication rejected")
+                    emitStructuredStatus("error", errorKind = "auth", errorMessage = "auth rejected")
+                }
+                "fatal" -> {
+                    updateNotification("VPN error: fatal")
+                    emitStructuredStatus("error", errorKind = "fatal")
+                }
+                "max-retries-exceeded" -> {
+                    updateNotification("VPN error: max retries exceeded")
+                    emitStructuredStatus("error", errorKind = "transient", errorMessage = "max retries exceeded")
+                }
                 else -> { /* clean-disconnect / autoreconnect-off / already-stopped: caller updates */ }
             }
             return false
@@ -486,6 +577,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
         // Persist the new attempt counter for follow-up callbacks (onAvailable etc.).
         reconnectAttempt.set(decision.nextAttempt)
+        emitStructuredStatus("reconnecting", attempt = decision.nextAttempt, max = maxRetries)
 
         updateNotification(
             if (immediate) "Reconnecting (attempt ${decision.nextAttempt}/$maxRetries)..."

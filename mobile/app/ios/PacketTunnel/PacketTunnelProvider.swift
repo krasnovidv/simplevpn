@@ -29,7 +29,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
     // MARK: - Config (set once in startTunnel, read-only afterwards)
     private var storedConfig: String = ""
     private var maxRetries: Int = 5
+    private var maxBackoffSeconds: Int = 60
     private var autoReconnect: Bool = false
+    private var splitTunnelMode: String = "off"
+    private var splitTunnelRoutes: [String] = []
 
     // MARK: - App Group IPC (written here, observed by VpnManager for Task 24)
     private static let appGroupId = "group.com.simplevpn.app"
@@ -54,7 +57,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         autoReconnect: Bool,
         kind: String,
         attempt: Int,
-        maxRetries: Int
+        maxRetries: Int,
+        maxBackoffSeconds: Int = 60
     ) -> RetryDecision {
         if kind == "none" {
             return RetryDecision(shouldRetry: false, delaySecs: 0, reason: "clean-disconnect")
@@ -70,7 +74,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         if attempt >= maxRetries {
             return RetryDecision(shouldRetry: false, delaySecs: 0, reason: "max-retries-exceeded")
         }
-        let delay = backoff(attempt: attempt)
+        let delay = backoff(attempt: attempt, maxBackoffSeconds: maxBackoffSeconds)
         return RetryDecision(shouldRetry: true, delaySecs: delay, reason: "retry")
     }
 
@@ -94,7 +98,10 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         storedConfig = config
         autoReconnect = cfg["auto_reconnect"] as? Bool ?? false
         maxRetries = (cfg["max_retries"] as? Int) ?? 5
-        logger.debug("startTunnel: autoReconnect=\(self.autoReconnect) maxRetries=\(self.maxRetries)")
+        maxBackoffSeconds = (cfg["max_backoff_s"] as? Int) ?? 60
+        splitTunnelMode = cfg["split_tunnel_mode"] as? String ?? "off"
+        splitTunnelRoutes = cfg["split_tunnel_routes"] as? [String] ?? []
+        logger.debug("startTunnel: autoReconnect=\(self.autoReconnect) maxRetries=\(self.maxRetries) maxBackoffSeconds=\(self.maxBackoffSeconds) splitMode=\(self.splitTunnelMode) splitRoutes=\(self.splitTunnelRoutes.count)")
 
         // loopQueue not yet active — safe to write directly
         loopStopped = false
@@ -202,6 +209,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     // Called on loopQueue whenever RunTunnel exits or Preflight fails mid-retry.
     // Reads LastErrorKind (set by Go) and decides whether to retry or cancel.
+    //
+    // IMPORTANT (kill-switch): setTunnelNetworkSettings(nil) is NEVER called here or in
+    // doReconnect. Calling it would briefly remove the route table while a reconnect is
+    // in progress, violating the kill-switch guarantee (no traffic must leak while retrying).
+    // Routes are only cleared by stopTunnel (user-initiated disconnect).
     private func handleTunnelExit(config: String, attempt: Int) {
         guard !loopStopped else {
             logger.debug("handleTunnelExit: loopStopped attempt=\(attempt)")
@@ -213,7 +225,8 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         logger.debug("handleTunnelExit: kind=\(kind) attempt=\(attempt) autoReconnect=\(self.autoReconnect) maxRetries=\(self.maxRetries)")
 
         let d = Self.retryDecision(autoReconnect: autoReconnect, kind: kind,
-                                   attempt: attempt, maxRetries: maxRetries)
+                                   attempt: attempt, maxRetries: maxRetries,
+                                   maxBackoffSeconds: maxBackoffSeconds)
         logger.debug("handleTunnelExit: shouldRetry=\(d.shouldRetry) reason=\(d.reason)")
 
         if !d.shouldRetry {
@@ -389,6 +402,11 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         defaults?.set(json, forKey: Self.statusDefaultsKey)
         defaults?.synchronize()
         logger.debug("emitStatus: \(json)")
+        // Cross-process notification so VpnManager (host app) reads the updated status.
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            CFNotificationName("com.simplevpn.tunnelStatus" as CFString),
+            nil, nil, true)
     }
 
     // MARK: - Bridge
@@ -453,6 +471,9 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         case "getStatus":
             response = VpnlibStatus() ?? "unknown"
             logger.debug("IPC: getStatus response=\(response)")
+        case "getStats":
+            response = VpnlibGetStats() ?? """{"bytes_in":0,"bytes_out":0,"since_ms":0}"""
+            logger.debug("IPC: getStats response size=\(response.count)")
         default:
             logger.error("IPC: unknown request=\(request)")
             completionHandler?(nil)
@@ -473,15 +494,53 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
         let assignedIP = String(parts[0])
         let subnetMask = prefixLenToMask(prefixLen)
         let gatewayIP = gatewayFromPrefix(assignedIP, prefixLen: prefixLen)
-        logger.debug("makeSettings: addr=\(assignedIP)/\(prefixLen) gw=\(gatewayIP)")
+        logger.debug("makeSettings: addr=\(assignedIP)/\(prefixLen) gw=\(gatewayIP) splitMode=\(splitTunnelMode)")
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: gatewayIP)
         let ipv4 = NEIPv4Settings(addresses: [assignedIP], subnetMasks: [subnetMask])
-        ipv4.includedRoutes = [NEIPv4Route.default()]
+
+        switch splitTunnelMode {
+        case "allowlist":
+            // Route only the specified CIDRs through the VPN.
+            // Empty allowlist is treated as "off" to avoid black-holing all traffic.
+            let parsed = splitTunnelRoutes.compactMap { Self.parseCidrRoute($0) }
+            if parsed.isEmpty {
+                logger.warning("makeSettings: allowlist mode with empty/invalid routes — falling back to full tunnel")
+                ipv4.includedRoutes = [NEIPv4Route.default()]
+            } else {
+                ipv4.includedRoutes = parsed
+                logger.debug("makeSettings: allowlist \(parsed.count) routes")
+            }
+        case "blocklist":
+            // Full tunnel but exclude specified CIDRs.
+            ipv4.includedRoutes = [NEIPv4Route.default()]
+            let excluded = splitTunnelRoutes.compactMap { Self.parseCidrRoute($0) }
+            ipv4.excludedRoutes = excluded
+            logger.debug("makeSettings: blocklist excluded \(excluded.count) routes")
+        default:
+            // Full tunnel (mode == "off").
+            ipv4.includedRoutes = [NEIPv4Route.default()]
+            logger.debug("makeSettings: full tunnel (mode=off)")
+        }
+
         settings.ipv4Settings = ipv4
         settings.dnsSettings = NEDNSSettings(servers: ["1.1.1.1", "8.8.8.8"])
         settings.mtu = 1380
         return settings
+    }
+
+    // Parses "a.b.c.d/n" → NEIPv4Route. Returns nil for malformed or IPv6 inputs.
+    // Static so PacketTunnelTests can call it directly.
+    static func parseCidrRoute(_ cidr: String) -> NEIPv4Route? {
+        let parts = cidr.split(separator: "/")
+        guard parts.count == 2,
+              let prefix = Int(parts[1]), prefix >= 0, prefix <= 32 else {
+            return nil
+        }
+        let ip = String(parts[0])
+        guard !ip.contains(":") else { return nil }  // IPv6 not supported
+        let mask = prefixLenToMask(prefix)
+        return NEIPv4Route(destinationAddress: ip, subnetMask: mask)
     }
 
     private func makeFds() throws -> [Int32] {

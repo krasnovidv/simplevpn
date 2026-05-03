@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,6 +61,12 @@ type logBuffer struct {
 }
 
 var logBuf = &logBuffer{maxSize: 200}
+
+var (
+	statsBytesIn     int64 // accessed via sync/atomic; reset on Connect/Preflight
+	statsBytesOut    int64
+	statsConnectedAt int64 // Unix ms; 0 when not connected
+)
 
 func (lb *logBuffer) Write(p []byte) (n int, err error) {
 	lb.mu.Lock()
@@ -218,6 +225,9 @@ func Connect(configJSON string, fd int) error {
 	log.Printf("[FIX] Connect mutex acquired")
 
 	resetLastKind()
+	atomic.StoreInt64(&statsBytesIn, 0)
+	atomic.StoreInt64(&statsBytesOut, 0)
+	atomic.StoreInt64(&statsConnectedAt, time.Now().UnixMilli())
 
 	current.mu.Lock()
 	if current.connected {
@@ -481,6 +491,7 @@ func Connect(configJSON string, fd int) error {
 				log.Printf("[vpnlib] Send error (after %d packets): %v", sendCount, err)
 				return
 			}
+			atomic.AddInt64(&statsBytesOut, int64(n))
 			sendCount++
 			if sendCount%1000 == 0 {
 				log.Printf("[vpnlib] TUN→Transport stats: sent %d packets", sendCount)
@@ -516,6 +527,7 @@ func Connect(configJSON string, fd int) error {
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}
+		atomic.AddInt64(&statsBytesIn, int64(len(plaintext)))
 		recvCount++
 	}
 }
@@ -533,6 +545,9 @@ func Preflight(configJSON string) string {
 	log.Printf("[vpnlib] Preflight: connectMu acquired")
 
 	resetLastKind()
+	atomic.StoreInt64(&statsBytesIn, 0)
+	atomic.StoreInt64(&statsBytesOut, 0)
+	atomic.StoreInt64(&statsConnectedAt, time.Now().UnixMilli())
 
 	unlockOnce := &sync.Once{}
 
@@ -794,6 +809,7 @@ func RunTunnel(fd int) error {
 				log.Printf("[vpnlib] RunTunnel Send error: %v", err)
 				return
 			}
+			atomic.AddInt64(&statsBytesOut, int64(n))
 			count++
 		}
 	}()
@@ -824,6 +840,7 @@ func RunTunnel(fd int) error {
 			setStatus("error: tun write: " + err.Error())
 			return err
 		}
+		atomic.AddInt64(&statsBytesIn, int64(len(plaintext)))
 		recvCount++
 	}
 }
@@ -943,4 +960,15 @@ func cleanup(conn net.Conn, tunFile *os.File) {
 	current.connected = false
 	current.status = "disconnected"
 	log.Printf("[vpnlib] Cleanup done")
+}
+
+// GetStats returns a JSON snapshot of traffic counters for the current session.
+// Returns {"bytes_in":N,"bytes_out":N,"since_ms":N} where since_ms is the Unix
+// millisecond timestamp when the current session started. All values are zero
+// when no session is active.
+func GetStats() string {
+	in := atomic.LoadInt64(&statsBytesIn)
+	out := atomic.LoadInt64(&statsBytesOut)
+	since := atomic.LoadInt64(&statsConnectedAt)
+	return fmt.Sprintf(`{"bytes_in":%d,"bytes_out":%d,"since_ms":%d}`, in, out, since)
 }

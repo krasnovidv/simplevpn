@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/vpn_service.dart';
@@ -5,10 +6,13 @@ import '../services/config_storage.dart';
 import '../services/admin_api_service.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
+import '../models/traffic_stats.dart';
 import '../utils/validators.dart';
 import 'settings_screen.dart';
 import 'log_screen.dart';
 import 'admin_screen.dart';
+import '../widgets/kill_switch_badge.dart';
+import '../widgets/stats_sparkline.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -17,22 +21,37 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
   final _vpnService = VpnService();
   final _storage = ConfigStorage();
   final _adminApi = AdminApiService();
   final _log = EventLog();
-  VpnStatus _status = VpnStatus.disconnected;
+  VpnStatus _status = const VpnStatusDisconnected();
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
   bool _adminConfigured = false;
+  bool _killSwitch = false;
   String _appVersion = '';
+  late final AnimationController _pulseController;
+  late final Animation<double> _pulseAnim;
+  TrafficSnapshot? _trafficSnapshot;
+  StreamSubscription<TrafficSnapshot>? _trafficSub;
 
   @override
   void initState() {
     super.initState();
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
+    _pulseAnim = Tween<double>(begin: 0.35, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
     _vpnService.addListener(_onStatusChanged);
+    _trafficSub = _vpnService.trafficStream.listen((snapshot) {
+      if (mounted) setState(() => _trafficSnapshot = snapshot);
+    });
     _loadConfig();
     _loadAppVersion();
     _checkAdminConfigured();
@@ -45,12 +64,18 @@ class _HomeScreenState extends State<HomeScreen> {
       _status = status;
       _actionInProgress = false;
     });
+    // Keep kill-switch flag in sync in case it changed while VPN was active.
+    _storage.getKillSwitch().then((v) {
+      if (mounted) setState(() => _killSwitch = v);
+    });
   }
 
   Future<void> _loadConfig() async {
     final config = await _storage.loadConfig();
+    final killSwitch = await _storage.getKillSwitch();
     setState(() {
       _config = config;
+      _killSwitch = killSwitch;
       _loading = false;
     });
   }
@@ -123,16 +148,28 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    // Status icon
-                    Container(
-                      width: 140,
-                      height: 140,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _statusColor.withValues(alpha: 0.15),
-                        border: Border.all(color: _statusColor, width: 3),
-                      ),
-                      child: _status == VpnStatus.connecting
+                    // Status icon with pulse when reconnecting
+                    AnimatedBuilder(
+                      animation: _pulseController,
+                      builder: (context, child) {
+                        final borderAlpha = _status is VpnStatusReconnecting
+                            ? _pulseAnim.value
+                            : 1.0;
+                        return Container(
+                          width: 140,
+                          height: 140,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _statusColor.withValues(alpha: 0.15),
+                            border: Border.all(
+                              color: _statusColor.withValues(alpha: borderAlpha),
+                              width: 3,
+                            ),
+                          ),
+                          child: child,
+                        );
+                      },
+                      child: _status is VpnStatusConnecting || _status is VpnStatusReconnecting
                           ? const Padding(
                               padding: EdgeInsets.all(38),
                               child: CircularProgressIndicator(strokeWidth: 3),
@@ -150,10 +187,28 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                     ),
 
+                    // Reconnecting attempt badge
+                    if (_status case VpnStatusReconnecting(:final attempt, :final max))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+                          ),
+                          child: Text(
+                            'Attempt $attempt / $max',
+                            style: const TextStyle(fontSize: 12, color: Colors.orange),
+                          ),
+                        ),
+                      ),
+
                     const SizedBox(height: 8),
 
                     // Error message
-                    if (_status == VpnStatus.error && _vpnService.errorMessage != null)
+                    if (_status is VpnStatusError && _vpnService.errorMessage != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: Text(
@@ -161,6 +216,30 @@ class _HomeScreenState extends State<HomeScreen> {
                           style: TextStyle(color: colorScheme.error, fontSize: 13),
                           textAlign: TextAlign.center,
                         ),
+                      ),
+
+                    // Kill switch badge
+                    if (_status is VpnStatusError &&
+                        (_status as VpnStatusError).errorKind == 'unsupported_kill_switch')
+                      KillSwitchBadge(
+                        kind: KillSwitchBadgeKind.unsupported,
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                        ),
+                      )
+                    else if (_killSwitch &&
+                        (_status is VpnStatusDisconnected ||
+                            (_status is VpnStatusError &&
+                                (_status as VpnStatusError).message
+                                    ?.contains('kill switch') == true)))
+                      KillSwitchBadge(
+                        kind: KillSwitchBadgeKind.blocked,
+                        onTap: () async {
+                          await Navigator.of(context).push(
+                            MaterialPageRoute(builder: (_) => const SettingsScreen()),
+                          );
+                          _loadConfig();
+                        },
                       ),
 
                     // Server info
@@ -188,7 +267,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       height: 56,
                       child: FilledButton.icon(
                         onPressed: _canToggle ? _toggleConnection : null,
-                        icon: Icon(_status == VpnStatus.connected
+                        icon: Icon(_status is VpnStatusConnected
                             ? Icons.stop_rounded
                             : Icons.play_arrow_rounded),
                         label: Text(
@@ -196,7 +275,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           style: const TextStyle(fontSize: 18),
                         ),
                         style: FilledButton.styleFrom(
-                          backgroundColor: _status == VpnStatus.connected
+                          backgroundColor: _status is VpnStatusConnected
                               ? colorScheme.error
                               : null,
                         ),
@@ -218,6 +297,27 @@ class _HomeScreenState extends State<HomeScreen> {
                         icon: const Icon(Icons.settings),
                         label: const Text('Configure Server'),
                       ),
+
+                    // Traffic stats (when connected or reconnecting)
+                    if (_trafficSnapshot != null &&
+                        (_status is VpnStatusConnected || _status is VpnStatusReconnecting)) ...[
+                      const SizedBox(height: 24),
+                      Text(
+                        '${formatBytes(_trafficSnapshot!.cumulative.bytesIn)} ↓  /  '
+                        '${formatBytes(_trafficSnapshot!.cumulative.bytesOut)} ↑',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: colorScheme.onSurface.withValues(alpha: 0.7),
+                            ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: 280,
+                        child: StatsSparkline(
+                          samples: _trafficSnapshot!.samples,
+                          reconnecting: _status is VpnStatusReconnecting,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -242,39 +342,45 @@ class _HomeScreenState extends State<HomeScreen> {
   bool get _canToggle =>
       _config != null &&
       !_actionInProgress &&
-      _status != VpnStatus.connecting &&
-      (_status == VpnStatus.connected ||
+      _status is! VpnStatusConnecting &&
+      _status is! VpnStatusReconnecting &&
+      (_status is VpnStatusConnected ||
           validateServerAddress(_config!.server) == null);
 
   String get _buttonText => switch (_status) {
-        VpnStatus.connected => 'Disconnect',
-        VpnStatus.connecting => 'Connecting...',
-        _ => 'Connect',
+        VpnStatusConnected() => 'Disconnect',
+        VpnStatusConnecting() => 'Connecting...',
+        VpnStatusReconnecting() => 'Connecting...',
+        VpnStatusError() => 'Connect',
+        VpnStatusDisconnected() => 'Connect',
       };
 
   IconData get _statusIcon => switch (_status) {
-        VpnStatus.connected => Icons.shield_rounded,
-        VpnStatus.connecting => Icons.hourglass_top_rounded,
-        VpnStatus.error => Icons.error_outline_rounded,
-        VpnStatus.disconnected => Icons.shield_outlined,
+        VpnStatusConnected() => Icons.shield_rounded,
+        VpnStatusConnecting() => Icons.hourglass_top_rounded,
+        VpnStatusReconnecting() => Icons.hourglass_top_rounded,
+        VpnStatusError() => Icons.error_outline_rounded,
+        VpnStatusDisconnected() => Icons.shield_outlined,
       };
 
   Color get _statusColor => switch (_status) {
-        VpnStatus.connected => Colors.green,
-        VpnStatus.connecting => Colors.orange,
-        VpnStatus.error => Colors.red,
-        VpnStatus.disconnected => Colors.grey,
+        VpnStatusConnected() => Colors.green,
+        VpnStatusConnecting() => Colors.orange,
+        VpnStatusReconnecting() => Colors.orange,
+        VpnStatusError() => Colors.red,
+        VpnStatusDisconnected() => Colors.grey,
       };
 
   String get _statusText => switch (_status) {
-        VpnStatus.connected => 'Protected',
-        VpnStatus.connecting => 'Connecting...',
-        VpnStatus.error => 'Error',
-        VpnStatus.disconnected => 'Not Connected',
+        VpnStatusConnected() => 'Protected',
+        VpnStatusConnecting() => 'Connecting...',
+        VpnStatusReconnecting() => 'Reconnecting...',
+        VpnStatusError() => 'Error',
+        VpnStatusDisconnected() => 'Not Connected',
       };
 
   Future<void> _toggleConnection() async {
-    if (_status == VpnStatus.connected) {
+    if (_status is VpnStatusConnected) {
       _log.info('User pressed Disconnect');
       setState(() => _actionInProgress = true);
       _vpnService.disconnect();
@@ -293,10 +399,18 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => _actionInProgress = true);
       final autoReconnect = await _storage.getAutoReconnect();
       final killSwitch = await _storage.getKillSwitch();
+      final reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
+      final reconnectMaxBackoffS = await _storage.getReconnectMaxBackoff();
+      final splitConfig = await _storage.getSplitTunnelConfig();
       _vpnService.connect(
         _config!.toJson(),
         autoReconnect: autoReconnect,
         killSwitch: killSwitch,
+        reconnectMaxAttempts: reconnectMaxAttempts,
+        reconnectMaxBackoffS: reconnectMaxBackoffS,
+        splitTunnelMode: splitConfig.mode.name,
+        splitTunnelApps: splitConfig.apps,
+        splitTunnelRoutes: splitConfig.routes,
       );
     } else {
       _log.error('Connect pressed but no config loaded');
@@ -305,6 +419,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    _trafficSub?.cancel();
+    _pulseController.dispose();
     _vpnService.removeListener(_onStatusChanged);
     _vpnService.dispose();
     super.dispose();

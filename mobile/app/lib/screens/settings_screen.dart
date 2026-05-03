@@ -4,6 +4,7 @@ import '../services/admin_api_service.dart';
 import '../models/vpn_config.dart';
 import '../utils/validators.dart';
 import 'qr_scanner_screen.dart';
+import 'split_tunneling_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -25,6 +26,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _fingerprint = '';
   bool _autoReconnect = false;
   bool _killSwitch = false;
+  int _reconnectMaxAttempts = 5;
+  int _reconnectMaxBackoff = 60;
   bool _loaded = false;
   String? _serverError;
 
@@ -43,6 +46,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final config = await _storage.loadConfig();
     _autoReconnect = await _storage.getAutoReconnect();
     _killSwitch = await _storage.getKillSwitch();
+    _reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
+    _reconnectMaxBackoff = await _storage.getReconnectMaxBackoff();
     final adminSettings = await _adminApi.loadSettings();
 
     if (config != null) {
@@ -224,6 +229,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
               await _storage.setKillSwitch(v);
               setState(() => _killSwitch = v);
             },
+          ),
+
+          if (_autoReconnect) ...[
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Max retry attempts'),
+              subtitle: Text(
+                _reconnectMaxAttempts == 0
+                    ? 'Unlimited'
+                    : '$_reconnectMaxAttempts attempts',
+              ),
+              trailing: SizedBox(
+                width: 160,
+                child: Slider(
+                  value: _reconnectMaxAttempts.toDouble(),
+                  min: 0,
+                  max: 20,
+                  divisions: 20,
+                  onChanged: (v) async {
+                    final val = v.round();
+                    await _storage.setReconnectMaxAttempts(val);
+                    setState(() => _reconnectMaxAttempts = val);
+                  },
+                ),
+              ),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Max backoff'),
+              subtitle: Text('${_reconnectMaxBackoff}s between retries'),
+              trailing: SizedBox(
+                width: 160,
+                child: Slider(
+                  value: _reconnectMaxBackoff.toDouble(),
+                  min: 10,
+                  max: 300,
+                  divisions: 29,
+                  onChanged: (v) async {
+                    final val = (v / 10).round() * 10;
+                    await _storage.setReconnectMaxBackoff(val);
+                    setState(() => _reconnectMaxBackoff = val);
+                  },
+                ),
+              ),
+            ),
+          ],
+
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Split Tunneling'),
+            subtitle: const Text('Choose apps or routes to exclude/include'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SplitTunnelingScreen()),
+            ),
           ),
 
           const Divider(height: 40),
