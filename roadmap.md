@@ -34,12 +34,12 @@
 - [x] 4.3 Split tunneling configuration (Android per-app, iOS per-route CIDR)
 - [x] 4.4 Traffic statistics UI (bytes in/out per session, 60 s sparkline)
 
-## Phase 5 — Distribution
+## Phase 5 — Quality of Life (future)
 
-- [ ] 5.1 F-Droid build metadata
-- [ ] 5.2 Play Store listing
-- [ ] 5.3 Automated release pipeline
+- [ ] 5.1 WireGuard-style persistent keepalive tuning
+- [ ] 5.2 Multi-server profile switcher
+- [ ] 5.3 Widget / Quick Settings tile (Android)
 
 ---
 
-Phase 5 next.
+Personal-use app — no store distribution planned.
