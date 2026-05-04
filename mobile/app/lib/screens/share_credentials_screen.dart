@@ -68,8 +68,13 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
     if (config == null) return null;
     final json = config.toJson();
     final encoded = encodeConfigToBase64Url(json);
-    final serverHost = config.server.split(':').first;
-    return 'https://$serverHost:8443/join#$encoded';
+    return 'simplevpn://connect/$encoded';
+  }
+
+  String get _shareText {
+    final link = _shareLink ?? '';
+    return 'RKNPNH VPN — конфиг для ${widget.username}\n\n'
+        'Открой ссылку на телефоне (нужно приложение RKNPNH):\n$link';
   }
 
   Future<void> _copyLink() async {
@@ -79,16 +84,15 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
     _log.debug('ShareCredentials: link copied to clipboard');
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Link copied to clipboard')),
+        const SnackBar(content: Text('Ссылка скопирована')),
       );
     }
   }
 
   Future<void> _shareLink_() async {
-    final link = _shareLink;
-    if (link == null) return;
+    if (_shareLink == null) return;
     _log.debug('ShareCredentials: sharing link');
-    await Share.share(link);
+    await Share.share(_shareText);
   }
 
   Future<void> _shareQrImage() async {
@@ -106,7 +110,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
 
     await Share.shareXFiles(
       [XFile(file.path)],
-      text: 'SimpleVPN configuration for ${widget.username}',
+      text: 'RKNPNH VPN — конфиг для ${widget.username}',
     );
   }
 
@@ -120,19 +124,19 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
   Widget build(BuildContext context) {
     if (_loading) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Share Credentials')),
+        appBar: AppBar(title: const Text('Поделиться доступом')),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     if (_serverConfig == null) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Share Credentials')),
+        appBar: AppBar(title: const Text('Поделиться доступом')),
         body: const Center(
           child: Padding(
             padding: EdgeInsets.all(24),
             child: Text(
-              'No server configuration found.\nConfigure a server in Settings first.',
+              'Конфигурация сервера не найдена.\nСначала настройте сервер.',
               textAlign: TextAlign.center,
             ),
           ),
@@ -143,7 +147,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
     final hasConfig = _configJson != null;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Share Credentials')),
+      appBar: AppBar(title: const Text('Поделиться доступом')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -160,8 +164,8 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'This will contain the user\'s password. '
-                    'Share only over a secure channel.',
+                    'Содержит пароль пользователя. '
+                    'Передавайте только по защищённому каналу.',
                     style: TextStyle(fontSize: 13),
                   ),
                 ),
@@ -171,28 +175,30 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
 
           const SizedBox(height: 20),
 
-          Text('Server', style: Theme.of(context).textTheme.titleMedium),
+          Text('Сервер', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          _infoRow('Address', _serverConfig!.server),
+          _infoRow('Адрес', _serverConfig!.server),
           if (_serverConfig!.sni.isNotEmpty)
             _infoRow('SNI', _serverConfig!.sni),
 
           const SizedBox(height: 16),
 
-          Text('User', style: Theme.of(context).textTheme.titleMedium),
+          Text('Пользователь', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
-          _infoRow('Username', widget.username),
+          _infoRow('Логин', widget.username),
 
-          const SizedBox(height: 12),
-          TextField(
-            controller: _passwordCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Password',
-              helperText: 'Enter the password you set for this user',
-              border: OutlineInputBorder(),
+          if (widget.prefilledPassword == null) ...[
+            const SizedBox(height: 12),
+            TextField(
+              controller: _passwordCtrl,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Пароль',
+                helperText: 'Введите пароль, установленный для этого пользователя',
+                border: OutlineInputBorder(),
+              ),
             ),
-          ),
+          ],
 
           const SizedBox(height: 24),
 
@@ -211,7 +217,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
                     height: 240,
                     child: Center(
                       child: Text(
-                        'QR too large — reduce field lengths',
+                        'QR слишком большой — уменьшите поля',
                         textAlign: TextAlign.center,
                         style: TextStyle(color: Colors.red),
                       ),
@@ -229,7 +235,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
                   child: OutlinedButton.icon(
                     onPressed: _shareQrImage,
                     icon: const Icon(Icons.image),
-                    label: const Text('Share QR'),
+                    label: const Text('QR'),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -237,7 +243,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
                   child: OutlinedButton.icon(
                     onPressed: _copyLink,
                     icon: const Icon(Icons.copy),
-                    label: const Text('Copy Link'),
+                    label: const Text('Копировать'),
                   ),
                 ),
               ],
@@ -246,7 +252,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
             FilledButton.icon(
               onPressed: _shareLink_,
               icon: const Icon(Icons.share),
-              label: const Text('Share Link'),
+              label: const Text('Отправить ссылку'),
             ),
           ] else ...[
             Center(
@@ -262,7 +268,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
                 ),
                 child: const Center(
                   child: Text(
-                    'Enter password\nto generate QR & link',
+                    'Введите пароль\nдля генерации QR и ссылки',
                     textAlign: TextAlign.center,
                     style: TextStyle(color: Colors.grey),
                   ),

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
 import '../services/deep_link_service.dart';
+import '../services/admin_api_service.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
 import '../models/traffic_stats.dart';
@@ -17,6 +18,7 @@ import '../widgets/status_copy.dart';
 import '../widgets/pulse_rings.dart';
 import '../widgets/kill_switch_badge.dart';
 import 'settings_screen.dart';
+import 'admin_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -29,12 +31,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final _vpnService = VpnService();
   final _storage = ConfigStorage();
   final _deepLinkService = DeepLinkService();
+  final _adminApi = AdminApiService();
   final _log = EventLog();
   VpnStatus _status = const VpnStatusDisconnected();
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
   bool _killSwitch = false;
+  bool _adminConfigured = false;
   TrafficSnapshot? _trafficSnapshot;
   StreamSubscription<TrafficSnapshot>? _trafficSub;
   StreamSubscription<VpnConfig>? _deepLinkSub;
@@ -75,6 +79,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       if (mounted) setState(() => _trafficSnapshot = snapshot);
     });
     _loadConfig();
+    _checkAdminConfigured();
     _vpnService.checkInitialStatus();
     _initDeepLinks();
     _log.info('App started');
@@ -147,6 +152,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _killSwitch = killSwitch;
       _loading = false;
     });
+  }
+
+  Future<void> _checkAdminConfigured() async {
+    final configured = await _adminApi.isConfigured();
+    if (mounted) setState(() => _adminConfigured = configured);
   }
 
   Future<void> _initDeepLinks() async {
@@ -324,6 +334,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         HeaderWidget(
           subtitle: _subtitle,
           onSettingsTap: _openSettings,
+          showAdmin: _adminConfigured,
+          onAdminTap: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const AdminScreen()),
+          ),
         ),
         Expanded(
           child: GestureDetector(
@@ -552,6 +566,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       MaterialPageRoute(builder: (_) => const SettingsScreen()),
     );
     _loadConfig();
+    _checkAdminConfigured();
   }
 
   @override

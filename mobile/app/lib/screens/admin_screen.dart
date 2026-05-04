@@ -87,7 +87,7 @@ class _AdminScreenState extends State<AdminScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Add User'),
+        title: const Text('Добавить'),
         content: Form(
           key: formKey,
           child: Column(
@@ -95,14 +95,14 @@ class _AdminScreenState extends State<AdminScreen>
             children: [
               TextFormField(
                 controller: usernameCtrl,
-                decoration: const InputDecoration(labelText: 'Username'),
+                decoration: const InputDecoration(labelText: 'Имя пользователя'),
                 validator: AdminConstraints.validateUsername,
                 autofocus: true,
               ),
               const SizedBox(height: 12),
               TextFormField(
                 controller: passwordCtrl,
-                decoration: const InputDecoration(labelText: 'Password'),
+                decoration: const InputDecoration(labelText: 'Пароль'),
                 obscureText: true,
                 validator: AdminConstraints.validatePassword,
               ),
@@ -112,13 +112,13 @@ class _AdminScreenState extends State<AdminScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
+            child: const Text('Отмена'),
           ),
           FilledButton(
             onPressed: () {
               if (formKey.currentState!.validate()) Navigator.pop(ctx, true);
             },
-            child: const Text('Create'),
+            child: const Text('Создать'),
           ),
         ],
       ),
@@ -134,17 +134,17 @@ class _AdminScreenState extends State<AdminScreen>
       final share = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('User Created'),
-          content: Text('Share credentials for "${usernameCtrl.text}"?'),
+          title: const Text('Пользователь создан'),
+          content: Text('Поделиться доступом для "${usernameCtrl.text}"?'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Later'),
+              child: const Text('Позже'),
             ),
             FilledButton.icon(
               onPressed: () => Navigator.pop(ctx, true),
               icon: const Icon(Icons.share),
-              label: const Text('Share Now'),
+              label: const Text('Поделиться'),
             ),
           ],
         ),
@@ -160,7 +160,7 @@ class _AdminScreenState extends State<AdminScreen>
         );
       }
     } on AdminApiException catch (e) {
-      _showError('Create failed: ${e.message}');
+      _showError('Ошибка создания: ${e.message}');
     } catch (e) {
       _showError(e.toString());
     }
@@ -173,12 +173,12 @@ class _AdminScreenState extends State<AdminScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Change password for "$username"'),
+        title: Text('Сменить пароль для "$username"'),
         content: Form(
           key: formKey,
           child: TextFormField(
             controller: passwordCtrl,
-            decoration: const InputDecoration(labelText: 'New Password'),
+            decoration: const InputDecoration(labelText: 'Новый пароль'),
             obscureText: true,
             validator: AdminConstraints.validatePassword,
             autofocus: true,
@@ -187,13 +187,13 @@ class _AdminScreenState extends State<AdminScreen>
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
+            child: const Text('Отмена'),
           ),
           FilledButton(
             onPressed: () {
               if (formKey.currentState!.validate()) Navigator.pop(ctx, true);
             },
-            child: const Text('Update'),
+            child: const Text('Обновить'),
           ),
         ],
       ),
@@ -203,9 +203,9 @@ class _AdminScreenState extends State<AdminScreen>
 
     try {
       await _api.updatePassword(username, passwordCtrl.text);
-      _showSnack('Password updated');
+      _showSnack('Пароль обновлён');
     } on AdminApiException catch (e) {
-      _showError('Update failed: ${e.message}');
+      _showError('Ошибка обновления: ${e.message}');
     } catch (e) {
       _showError(e.toString());
     }
@@ -215,19 +215,19 @@ class _AdminScreenState extends State<AdminScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Delete User'),
-        content: Text('Delete user "$username"? This cannot be undone.'),
+        title: const Text('Удалить пользователя'),
+        content: Text('Удалить пользователя "$username"? Это действие нельзя отменить.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
+            child: const Text('Отмена'),
           ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(ctx).colorScheme.error,
             ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Delete'),
+            child: const Text('Удалить'),
           ),
         ],
       ),
@@ -239,7 +239,7 @@ class _AdminScreenState extends State<AdminScreen>
       await _api.deleteUser(username);
       _loadUsers();
     } on AdminApiException catch (e) {
-      _showError('Delete failed: ${e.message}');
+      _showError('Ошибка удаления: ${e.message}');
     } catch (e) {
       _showError(e.toString());
     }
@@ -254,7 +254,7 @@ class _AdminScreenState extends State<AdminScreen>
       }
       _loadUsers();
     } on AdminApiException catch (e) {
-      _showError('Failed: ${e.message}');
+      _showError('Ошибка: ${e.message}');
     } catch (e) {
       _showError(e.toString());
     }
@@ -283,21 +283,21 @@ class _AdminScreenState extends State<AdminScreen>
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Disconnect Client'),
+        title: const Text('Отключить клиента'),
         content: Text(
-          'Disconnect "${client.username}" (${client.assignedIp})?',
+          'Отключить "${client.username}" (${client.assignedIp})?',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
+            child: const Text('Отмена'),
           ),
           FilledButton(
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(ctx).colorScheme.error,
             ),
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Disconnect'),
+            child: const Text('Отключить'),
           ),
         ],
       ),
@@ -309,7 +309,7 @@ class _AdminScreenState extends State<AdminScreen>
       await _api.disconnectClient(client.id);
       _loadClients();
     } on AdminApiException catch (e) {
-      _showError('Failed: ${e.message}');
+      _showError('Ошибка: ${e.message}');
     } catch (e) {
       _showError(e.toString());
     }
@@ -357,13 +357,13 @@ class _AdminScreenState extends State<AdminScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Admin'),
+        title: const Text('Админ'),
         bottom: TabBar(
           controller: _tabs,
           tabs: const [
-            Tab(icon: Icon(Icons.people), text: 'Users'),
-            Tab(icon: Icon(Icons.devices), text: 'Clients'),
-            Tab(icon: Icon(Icons.dns), text: 'Server'),
+            Tab(icon: Icon(Icons.people), text: 'Пользователи'),
+            Tab(icon: Icon(Icons.devices), text: 'Клиенты'),
+            Tab(icon: Icon(Icons.dns), text: 'Сервер'),
           ],
         ),
       ),
@@ -386,7 +386,7 @@ class _AdminScreenState extends State<AdminScreen>
           : _usersError != null
               ? _errorView(_usersError!, _loadUsers)
               : _users.isEmpty
-                  ? _emptyView('No users found')
+                  ? _emptyView('Пользователи не найдены')
                   : Stack(
                       children: [
                         ListView.separated(
@@ -403,7 +403,7 @@ class _AdminScreenState extends State<AdminScreen>
                             heroTag: 'addUser',
                             onPressed: _showAddUserDialog,
                             icon: const Icon(Icons.person_add),
-                            label: const Text('Add User'),
+                            label: const Text('Добавить'),
                           ),
                         ),
                       ],
@@ -423,7 +423,7 @@ class _AdminScreenState extends State<AdminScreen>
             ? const TextStyle(color: Colors.grey)
             : null,
       ),
-      subtitle: Text(user.createdAt.isNotEmpty ? 'Created: ${user.createdAt}' : ''),
+      subtitle: Text(user.createdAt.isNotEmpty ? 'Создан: ${user.createdAt}' : ''),
       trailing: PopupMenuButton<String>(
         onSelected: (action) {
           switch (action) {
@@ -447,7 +447,7 @@ class _AdminScreenState extends State<AdminScreen>
             value: 'share',
             child: ListTile(
               leading: Icon(Icons.share),
-              title: Text('Share Credentials'),
+              title: Text('Поделиться доступом'),
               dense: true,
             ),
           ),
@@ -455,7 +455,7 @@ class _AdminScreenState extends State<AdminScreen>
             value: 'password',
             child: ListTile(
               leading: Icon(Icons.key),
-              title: Text('Change Password'),
+              title: Text('Сменить пароль'),
               dense: true,
             ),
           ),
@@ -463,7 +463,7 @@ class _AdminScreenState extends State<AdminScreen>
             value: 'toggle',
             child: ListTile(
               leading: Icon(user.disabled ? Icons.person : Icons.person_off),
-              title: Text(user.disabled ? 'Enable' : 'Disable'),
+              title: Text(user.disabled ? 'Включить' : 'Отключить'),
               dense: true,
             ),
           ),
@@ -471,7 +471,7 @@ class _AdminScreenState extends State<AdminScreen>
             value: 'delete',
             child: ListTile(
               leading: Icon(Icons.delete, color: Colors.red),
-              title: Text('Delete', style: TextStyle(color: Colors.red)),
+              title: Text('Удалить', style: TextStyle(color: Colors.red)),
               dense: true,
             ),
           ),
@@ -488,7 +488,7 @@ class _AdminScreenState extends State<AdminScreen>
           : _clientsError != null
               ? _errorView(_clientsError!, _loadClients)
               : _clients.isEmpty
-                  ? _emptyView('No connected clients')
+                  ? _emptyView('Нет подключённых клиентов')
                   : ListView.separated(
                       itemCount: _clients.length,
                       separatorBuilder: (_, __) => const Divider(height: 1),
@@ -503,12 +503,12 @@ class _AdminScreenState extends State<AdminScreen>
       leading: const Icon(Icons.devices),
       title: Text(client.username),
       subtitle: Text(
-        '${client.assignedIp} · ${client.remoteAddr}\n${kb}KB transferred',
+        '${client.assignedIp} · ${client.remoteAddr}\n${kb}КБ передано',
       ),
       isThreeLine: true,
       trailing: IconButton(
         icon: const Icon(Icons.logout, color: Colors.red),
-        tooltip: 'Disconnect',
+        tooltip: 'Отключить',
         onPressed: () => _confirmDisconnect(client),
       ),
     );
@@ -522,7 +522,7 @@ class _AdminScreenState extends State<AdminScreen>
           : _statusError != null
               ? _errorView(_statusError!, _loadStatus)
               : _status == null
-                  ? _emptyView('No data')
+                  ? _emptyView('Нет данных')
                   : ListView(
                       padding: const EdgeInsets.all(16),
                       children: [
@@ -535,7 +535,7 @@ class _AdminScreenState extends State<AdminScreen>
                             ),
                           ),
                           icon: const Icon(Icons.qr_code),
-                          label: const Text('Generate Client QR'),
+                          label: const Text('QR для клиента'),
                         ),
                       ],
                     ),
@@ -554,11 +554,11 @@ class _AdminScreenState extends State<AdminScreen>
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _statusRow(Icons.circle, 'Status', s.status.toUpperCase()),
-            _statusRow(Icons.info_outline, 'Version', s.version),
-            _statusRow(Icons.timer, 'Uptime', uptimeStr),
-            _statusRow(Icons.people, 'Clients', '${s.clientCount}'),
-            _statusRow(Icons.lan, 'Listen', s.listen),
+            _statusRow(Icons.circle, 'Статус', s.status.toUpperCase()),
+            _statusRow(Icons.info_outline, 'Версия', s.version),
+            _statusRow(Icons.timer, 'Аптайм', uptimeStr),
+            _statusRow(Icons.people, 'Клиенты', '${s.clientCount}'),
+            _statusRow(Icons.lan, 'Адрес', s.listen),
           ],
         ),
       ),
@@ -590,7 +590,7 @@ class _AdminScreenState extends State<AdminScreen>
             const SizedBox(height: 12),
             Text(error, textAlign: TextAlign.center),
             const SizedBox(height: 16),
-            FilledButton(onPressed: onRetry, child: const Text('Retry')),
+            FilledButton(onPressed: onRetry, child: const Text('Повторить')),
           ],
         ),
       ),

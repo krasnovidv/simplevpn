@@ -57,7 +57,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
     } on PlatformException catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load apps: ${e.message}')),
+          SnackBar(content: Text('Ошибка загрузки приложений: ${e.message}')),
         );
       }
     } finally {
@@ -94,7 +94,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
       return;
     }
     if (_config.routes.contains(cidr)) {
-      setState(() => _routeError = 'Already in list');
+      setState(() => _routeError = 'Уже в списке');
       return;
     }
     final routes = [..._config.routes, cidr];
@@ -119,7 +119,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
   void _showReconnectSnack() {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Reconnect required for changes to take effect')),
+      const SnackBar(content: Text('Для применения изменений переподключитесь')),
     );
   }
 
@@ -127,12 +127,12 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Split Tunneling'),
+        title: const Text('Раздельное туннелирование'),
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
-            Tab(text: 'Apps', icon: Icon(Icons.apps)),
-            Tab(text: 'Routes', icon: Icon(Icons.route)),
+            Tab(text: 'Приложения', icon: Icon(Icons.apps)),
+            Tab(text: 'Маршруты', icon: Icon(Icons.route)),
           ],
         ),
       ),
@@ -161,13 +161,13 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
       child: DropdownButtonFormField<SplitTunnelMode>(
         value: _config.mode,
         decoration: const InputDecoration(
-          labelText: 'Mode',
+          labelText: 'Режим',
           border: OutlineInputBorder(),
         ),
         items: const [
-          DropdownMenuItem(value: SplitTunnelMode.off, child: Text('Off — full tunnel')),
-          DropdownMenuItem(value: SplitTunnelMode.allowlist, child: Text('Allowlist — only selected')),
-          DropdownMenuItem(value: SplitTunnelMode.blocklist, child: Text('Blocklist — exclude selected')),
+          DropdownMenuItem(value: SplitTunnelMode.off, child: Text('Выкл — полный туннель')),
+          DropdownMenuItem(value: SplitTunnelMode.allowlist, child: Text('Разрешённые — только выбранные')),
+          DropdownMenuItem(value: SplitTunnelMode.blocklist, child: Text('Заблокированные — кроме выбранных')),
         ],
         onChanged: _setMode,
       ),
@@ -180,7 +180,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'Per-app split tunneling is available on Android only.\nUse the Routes tab on iOS.',
+            'Раздельное туннелирование по приложениям доступно только на Android.\nИспользуйте вкладку «Маршруты» на iOS.',
             textAlign: TextAlign.center,
           ),
         ),
@@ -203,7 +203,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
           child: TextField(
             decoration: const InputDecoration(
-              hintText: 'Search apps',
+              hintText: 'Поиск приложений',
               prefixIcon: Icon(Icons.search),
               border: OutlineInputBorder(),
               isDense: true,
@@ -214,7 +214,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
         if (_config.mode == SplitTunnelMode.off)
           const Padding(
             padding: EdgeInsets.all(12),
-            child: Text('Enable Allowlist or Blocklist mode to select apps.'),
+            child: Text('Включите режим для выбора приложений.'),
           ),
         Expanded(
           child: ListView.builder(
@@ -255,7 +255,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
         child: Padding(
           padding: EdgeInsets.all(24),
           child: Text(
-            'CIDR route split tunneling is configured on iOS.\nUse the Apps tab on Android.',
+            'Маршрутизация по CIDR настраивается на iOS.\nИспользуйте вкладку «Приложения» на Android.',
             textAlign: TextAlign.center,
           ),
         ),
@@ -272,7 +272,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
                 child: TextField(
                   controller: _routeCtrl,
                   decoration: InputDecoration(
-                    labelText: 'Add CIDR (e.g. 192.168.1.0/24)',
+                    labelText: 'Добавить CIDR (напр. 192.168.1.0/24)',
                     border: const OutlineInputBorder(),
                     errorText: _routeError,
                   ),
@@ -284,7 +284,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
               IconButton.filled(
                 icon: const Icon(Icons.add),
                 onPressed: _config.mode == SplitTunnelMode.off ? null : _addRoute,
-                tooltip: 'Add route',
+                tooltip: 'Добавить маршрут',
               ),
             ],
           ),
@@ -292,11 +292,11 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
         if (_config.mode == SplitTunnelMode.off)
           const Padding(
             padding: EdgeInsets.symmetric(horizontal: 16),
-            child: Text('Enable Allowlist or Blocklist mode to configure routes.'),
+            child: Text('Включите режим для настройки маршрутов.'),
           ),
         Expanded(
           child: _config.routes.isEmpty
-              ? const Center(child: Text('No routes added yet.'))
+              ? const Center(child: Text('Маршруты не добавлены.'))
               : ListView.builder(
                   itemCount: _config.routes.length,
                   itemBuilder: (_, i) {

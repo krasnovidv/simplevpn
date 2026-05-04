@@ -15,7 +15,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Scan QR Code')),
+      appBar: AppBar(title: const Text('Сканировать QR')),
       body: MobileScanner(
         onDetect: (capture) {
           if (_scanned) return;
@@ -28,7 +28,7 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
             Navigator.of(context).pop(config);
           } catch (e) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Invalid QR code: $e')),
+              SnackBar(content: Text('Неверный QR: $e')),
             );
             _scanned = false;
           }

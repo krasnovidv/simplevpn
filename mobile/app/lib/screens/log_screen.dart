@@ -28,11 +28,11 @@ class _LogScreenState extends State<LogScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Connection Log'),
+        title: const Text('Журнал подключений'),
         actions: [
           IconButton(
             icon: const Icon(Icons.delete_outline),
-            tooltip: 'Clear logs',
+            tooltip: 'Очистить журнал',
             onPressed: () {
               _eventLog.clear();
               setState(() {});
@@ -42,7 +42,7 @@ class _LogScreenState extends State<LogScreen> {
       ),
       body: logs.isEmpty
           ? const Center(
-              child: Text('No log entries', style: TextStyle(color: Colors.grey)))
+              child: Text('Нет записей', style: TextStyle(color: Colors.grey)))
           : ListView.builder(
               reverse: true,
               padding: const EdgeInsets.all(8),

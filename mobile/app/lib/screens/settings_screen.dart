@@ -72,18 +72,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     if (!_loaded) {
       return Scaffold(
-        appBar: AppBar(title: const Text('Settings')),
+        appBar: AppBar(title: const Text('Настройки')),
         body: const Center(child: CircularProgressIndicator()),
       );
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Settings'),
+        title: const Text('Настройки'),
         actions: [
           IconButton(
             icon: const Icon(Icons.qr_code_scanner),
-            tooltip: 'Scan QR Config',
+            tooltip: 'Сканировать QR',
             onPressed: _scanQr,
           ),
         ],
@@ -92,14 +92,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
         padding: const EdgeInsets.all(16),
         children: [
           // Server config section
-          Text('Server Configuration',
+          Text('Конфигурация сервера',
               style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 12),
 
           TextField(
             controller: _serverCtrl,
             decoration: InputDecoration(
-              labelText: 'Server (ip:port)',
+              labelText: 'Сервер (ip:порт)',
               hintText: '192.168.1.1:443',
               border: const OutlineInputBorder(),
               errorText: _serverError,
@@ -116,7 +116,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _serverKeyCtrl,
             obscureText: true,
             decoration: const InputDecoration(
-              labelText: 'Server Key',
+              labelText: 'Ключ сервера',
               border: OutlineInputBorder(),
             ),
           ),
@@ -125,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextField(
             controller: _usernameCtrl,
             decoration: const InputDecoration(
-              labelText: 'Username',
+              labelText: 'Имя пользователя',
               border: OutlineInputBorder(),
             ),
           ),
@@ -135,7 +135,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _passwordCtrl,
             obscureText: true,
             decoration: const InputDecoration(
-              labelText: 'Password',
+              labelText: 'Пароль',
               border: OutlineInputBorder(),
             ),
           ),
@@ -144,7 +144,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextField(
             controller: _sniCtrl,
             decoration: const InputDecoration(
-              labelText: 'SNI Domain (optional)',
+              labelText: 'SNI домен (необязательно)',
               hintText: 'vpn.example.com',
               border: OutlineInputBorder(),
             ),
@@ -152,8 +152,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 12),
 
           SwitchListTile(
-            title: const Text('Skip TLS Verification'),
-            subtitle: const Text('For self-signed certificates (test servers)'),
+            title: const Text('Пропустить проверку TLS'),
+            subtitle: const Text('Для самоподписанных сертификатов'),
             value: _skipVerify,
             onChanged: (v) => setState(() => _skipVerify = v),
             contentPadding: EdgeInsets.zero,
@@ -162,13 +162,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const SizedBox(height: 16),
 
           // Transport settings
-          Text('Transport', style: Theme.of(context).textTheme.titleMedium),
+          Text('Транспорт', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 12),
 
           DropdownButtonFormField<String>(
             value: _transport,
             decoration: const InputDecoration(
-              labelText: 'Transport Protocol',
+              labelText: 'Транспортный протокол',
               border: OutlineInputBorder(),
             ),
             items: VpnConfig.transportOptions
@@ -184,7 +184,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           DropdownButtonFormField<String>(
             value: _fingerprint,
             decoration: const InputDecoration(
-              labelText: 'TLS Fingerprint',
+              labelText: 'TLS отпечаток',
               border: OutlineInputBorder(),
             ),
             items: VpnConfig.fingerprintOptions
@@ -201,13 +201,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
           const Divider(height: 40),
 
           // Connection settings
-          Text('Connection', style: Theme.of(context).textTheme.titleMedium),
+          Text('Подключение', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
 
           SwitchListTile(
-            title: const Text('Auto-Reconnect'),
+            title: const Text('Автопереподключение'),
             subtitle:
-                const Text('Automatically reconnect on network changes'),
+                const Text('Автоматически переподключаться при смене сети'),
             value: _autoReconnect,
             onChanged: (v) async {
               await _storage.setAutoReconnect(v);
@@ -218,7 +218,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           SwitchListTile(
             title: const Text('Kill Switch'),
             subtitle:
-                const Text('Block all traffic when VPN disconnects'),
+                const Text('Блокировать трафик при отключении VPN'),
             value: _killSwitch,
             onChanged: (v) async {
               await _storage.setKillSwitch(v);
@@ -230,11 +230,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 8),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Max retry attempts'),
+              title: const Text('Макс. попыток'),
               subtitle: Text(
                 _reconnectMaxAttempts == 0
-                    ? 'Unlimited'
-                    : '$_reconnectMaxAttempts attempts',
+                    ? 'Без ограничений'
+                    : '$_reconnectMaxAttempts попыток',
               ),
               trailing: SizedBox(
                 width: 160,
@@ -253,8 +253,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('Max backoff'),
-              subtitle: Text('${_reconnectMaxBackoff}s between retries'),
+              title: const Text('Макс. задержка'),
+              subtitle: Text('${_reconnectMaxBackoff}с между попытками'),
               trailing: SizedBox(
                 width: 160,
                 child: Slider(
@@ -274,8 +274,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('Split Tunneling'),
-            subtitle: const Text('Choose apps or routes to exclude/include'),
+            title: const Text('Раздельное туннелирование'),
+            subtitle: const Text('Выбрать приложения или маршруты'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SplitTunnelingScreen()),
@@ -288,7 +288,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           Text('Admin API', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
           Text(
-            'Connect to the server management API to manage users and clients.',
+            'Подключение к API управления сервером.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
@@ -298,7 +298,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
           TextField(
             controller: _adminUrlCtrl,
             decoration: const InputDecoration(
-              labelText: 'Admin URL',
+              labelText: 'URL администратора',
               hintText: 'https://1.2.3.4:8443',
               border: OutlineInputBorder(),
             ),
@@ -310,15 +310,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             controller: _adminTokenCtrl,
             obscureText: true,
             decoration: const InputDecoration(
-              labelText: 'Bearer Token',
+              labelText: 'Bearer-токен',
               border: OutlineInputBorder(),
             ),
           ),
           const SizedBox(height: 4),
 
           SwitchListTile(
-            title: const Text('Skip TLS Verification'),
-            subtitle: const Text('For self-signed admin certificates'),
+            title: const Text('Пропустить проверку TLS'),
+            subtitle: const Text('Для самоподписанных сертификатов'),
             value: _adminSkipVerify,
             onChanged: (v) => setState(() => _adminSkipVerify = v),
             contentPadding: EdgeInsets.zero,
@@ -328,7 +328,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           FilledButton(
             onPressed: _saveAll,
-            child: const Text('Save All Settings'),
+            child: const Text('Сохранить всё'),
           ),
 
           const SizedBox(height: 24),
@@ -355,7 +355,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     await Future.wait([_save(), _saveAdmin()]);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('All settings saved')),
+        const SnackBar(content: Text('Настройки сохранены')),
       );
     }
   }
