@@ -93,9 +93,11 @@ class VpnService with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused || state == AppLifecycleState.hidden) {
-      _log.debug('[FIX] App backgrounded, pausing status polling');
-      _wasPolling = _pollTimer != null;
-      _wasStatsPolling = _statsTimer != null;
+      _log.debug('[FIX] App backgrounded ($state), pausing polling');
+      // OR preserves flags across hidden→paused sequence (hidden stops timers,
+      // paused would then see null timers and overwrite to false)
+      _wasPolling = _wasPolling || _pollTimer != null;
+      _wasStatsPolling = _wasStatsPolling || _statsTimer != null;
       _stopPolling();
       _stopStatsPolling();
     } else if (state == AppLifecycleState.resumed) {
@@ -107,6 +109,8 @@ class VpnService with WidgetsBindingObserver {
       if (_wasStatsPolling) {
         _startStatsPolling();
       }
+      _wasPolling = false;
+      _wasStatsPolling = false;
     }
   }
 

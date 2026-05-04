@@ -198,11 +198,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 16),
 
-          FilledButton(
-            onPressed: _save,
-            child: const Text('Save Configuration'),
-          ),
-
           const Divider(height: 40),
 
           // Connection settings
@@ -329,10 +324,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
           ),
 
-          FilledButton.tonal(
-            onPressed: _saveAdmin,
-            child: const Text('Save Admin Settings'),
+          const SizedBox(height: 24),
+
+          FilledButton(
+            onPressed: _saveAll,
+            child: const Text('Save All Settings'),
           ),
+
+          const SizedBox(height: 24),
         ],
       ),
     );
@@ -350,10 +349,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       fingerprint: _fingerprint,
     );
     await _storage.saveConfig(config);
+  }
 
+  Future<void> _saveAll() async {
+    await Future.wait([_save(), _saveAdmin()]);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Configuration saved')),
+        const SnackBar(content: Text('All settings saved')),
       );
     }
   }
@@ -364,11 +366,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
       token: _adminTokenCtrl.text,
       skipVerify: _adminSkipVerify,
     );
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Admin settings saved')),
-      );
-    }
   }
 
   Future<void> _scanQr() async {
