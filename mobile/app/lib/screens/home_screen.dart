@@ -1,18 +1,21 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:package_info_plus/package_info_plus.dart';
+import 'package:flutter/services.dart';
 import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
-import '../services/admin_api_service.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
 import '../models/traffic_stats.dart';
 import '../utils/validators.dart';
-import 'settings_screen.dart';
-import 'log_screen.dart';
-import 'admin_screen.dart';
+import '../theme/app_theme.dart';
+import '../widgets/stamp_widget.dart';
+import '../widgets/connect_animation.dart';
+import '../widgets/header_widget.dart';
+import '../widgets/footer_card.dart';
+import '../widgets/status_copy.dart';
+import '../widgets/pulse_rings.dart';
 import '../widgets/kill_switch_badge.dart';
-import '../widgets/stats_sparkline.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -21,53 +24,115 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final _vpnService = VpnService();
   final _storage = ConfigStorage();
-  final _adminApi = AdminApiService();
   final _log = EventLog();
   VpnStatus _status = const VpnStatusDisconnected();
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
-  bool _adminConfigured = false;
   bool _killSwitch = false;
-  String _appVersion = '';
-  late final AnimationController _pulseController;
-  late final Animation<double> _pulseAnim;
   TrafficSnapshot? _trafficSnapshot;
   StreamSubscription<TrafficSnapshot>? _trafficSub;
+
+  late final AnimationController _stampPulseController;
+  late final AnimationController _stampShakeController;
+  late final AnimationController _connectAnimController;
+
+  DateTime? _connectedAt;
+  Timer? _uptimeTimer;
+  Duration _uptime = Duration.zero;
+  bool _visualDisconnecting = false;
+  bool _connectAnimPlaying = false;
+
+  int _connectedSecondsForAnim = 0;
 
   @override
   void initState() {
     super.initState();
-    _pulseController = AnimationController(
+
+    _stampPulseController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 900),
-    )..repeat(reverse: true);
-    _pulseAnim = Tween<double>(begin: 0.35, end: 1.0).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+      duration: const Duration(milliseconds: 2400),
+    )..repeat();
+
+    _stampShakeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
     );
+
+    _connectAnimController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 4000),
+    );
+
     _vpnService.addListener(_onStatusChanged);
     _trafficSub = _vpnService.trafficStream.listen((snapshot) {
       if (mounted) setState(() => _trafficSnapshot = snapshot);
     });
     _loadConfig();
-    _loadAppVersion();
-    _checkAdminConfigured();
     _vpnService.checkInitialStatus();
     _log.info('App started');
   }
 
   void _onStatusChanged(VpnStatus status) {
+    final prevStatus = _status;
     setState(() {
       _status = status;
       _actionInProgress = false;
     });
-    // Keep kill-switch flag in sync in case it changed while VPN was active.
+
+    if (status is VpnStatusConnecting && prevStatus is! VpnStatusConnecting) {
+      _connectAnimPlaying = true;
+      _connectAnimController.forward(from: 0).then((_) {
+        if (!mounted) return;
+        if (_status is! VpnStatusConnected) {
+          setState(() => _connectAnimPlaying = false);
+        }
+      });
+      _stampShakeController.repeat();
+    }
+
+    if (status is VpnStatusConnected && prevStatus is! VpnStatusConnected) {
+      _stampShakeController.stop();
+      _connectedAt = DateTime.now();
+      _connectedSecondsForAnim = 0;
+      _startUptimeTimer();
+    }
+
+    if (status is VpnStatusDisconnected || status is VpnStatusError) {
+      _stampShakeController.stop();
+      _connectAnimController.stop();
+      _connectAnimController.reset();
+      _connectAnimPlaying = false;
+      _stopUptimeTimer();
+      _connectedAt = null;
+      _connectedSecondsForAnim = 0;
+      _visualDisconnecting = false;
+    }
+
     _storage.getKillSwitch().then((v) {
       if (mounted) setState(() => _killSwitch = v);
     });
+  }
+
+  void _startUptimeTimer() {
+    _stopUptimeTimer();
+    _uptimeTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (_connectedAt != null && mounted) {
+        setState(() {
+          _uptime = DateTime.now().difference(_connectedAt!);
+          _connectedSecondsForAnim++;
+        });
+      }
+    });
+  }
+
+  void _stopUptimeTimer() {
+    _uptimeTimer?.cancel();
+    _uptimeTimer = null;
+    _uptime = Duration.zero;
   }
 
   Future<void> _loadConfig() async {
@@ -80,19 +145,6 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     });
   }
 
-  Future<void> _checkAdminConfigured() async {
-    final configured = await _adminApi.isConfigured();
-    if (mounted) setState(() => _adminConfigured = configured);
-  }
-
-  Future<void> _loadAppVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    _log.debug('App version: ${info.version}+${info.buildNumber}');
-    setState(() {
-      _appVersion = 'v${info.version} (${info.buildNumber})';
-    });
-  }
-
   String? _validateConfig(VpnConfig config) {
     final serverError = validateServerAddress(config.server);
     if (serverError != null) return serverError;
@@ -102,240 +154,288 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     return null;
   }
 
+  bool get _showConnectAnim {
+    if (_connectAnimPlaying) return true;
+    if (_status is VpnStatusConnecting) return true;
+    if (_status is VpnStatusConnected && _connectedSecondsForAnim < 4) return true;
+    return false;
+  }
+
+  String get _subtitle => switch (_status) {
+        VpnStatusConnected() => 'твой трафик забрали мы, а не они',
+        _ => 'VPN от тебя, против них',
+      };
+
+  String get _statusCaption {
+    if (_visualDisconnecting) return "// ЗАКРЫВАЕМ ТОННЕЛЬ…";
+    return switch (_status) {
+      VpnStatusDisconnected() => "// СТАТУС: НА ВИДУ",
+      VpnStatusConnecting() => "// ИЩЕМ МАРШРУТ…",
+      VpnStatusReconnecting() => "// ПЕРЕПОДКЛЮЧЕНИЕ…",
+      VpnStatusConnected() => "// СТАТУС: СКРЫТ",
+      VpnStatusError() => "// СТАТУС: ОШИБКА",
+    };
+  }
+
+  String get _statusCta {
+    if (_visualDisconnecting) return "ПОКА";
+    return switch (_status) {
+      VpnStatusDisconnected() => _config == null ? "НАСТРОИТЬ" : "НАЖМИ, ЧТОБЫ СКРЫТЬСЯ",
+      VpnStatusConnecting() => "ПОДОЖДИ",
+      VpnStatusReconnecting() => "ПОДОЖДИ",
+      VpnStatusConnected() => "НАЖМИ, ЧТОБЫ ВЫЙТИ",
+      VpnStatusError() => "НАЖМИ, ЧТОБЫ СКРЫТЬСЯ",
+    };
+  }
+
+  Color get _ctaColor {
+    if (_visualDisconnecting) return AppColors.magenta;
+    return switch (_status) {
+      VpnStatusConnected() => AppColors.cyan,
+      _ => AppColors.magenta,
+    };
+  }
+
+  Color get _stampColor => switch (_status) {
+        VpnStatusConnected() => AppColors.cyan,
+        _ => AppColors.magenta,
+      };
+
+  String _formatUptime(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
+  }
+
+  double get _latestDownMbps {
+    final samples = _trafficSnapshot?.samples;
+    if (samples == null || samples.isEmpty) return 0;
+    return samples.last.kbpsIn / 1024.0;
+  }
+
+  double get _latestUpMbps {
+    final samples = _trafficSnapshot?.samples;
+    if (samples == null || samples.isEmpty) return 0;
+    return samples.last.kbpsOut / 1024.0;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
+    final isConnected = _status is VpnStatusConnected;
+    final glowColor = isConnected ? AppColors.cyan : AppColors.magenta;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('SimpleVPN'),
-        actions: [
-          if (_adminConfigured)
-            IconButton(
-              icon: const Icon(Icons.admin_panel_settings),
-              tooltip: 'Admin',
-              onPressed: () => Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const AdminScreen()),
-              ),
-            ),
-          IconButton(
-            icon: const Icon(Icons.list_alt),
-            tooltip: 'Connection Log',
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const LogScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            tooltip: 'Settings',
-            onPressed: () async {
-              await Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => const SettingsScreen()),
-              );
-              _loadConfig();
-              _checkAdminConfigured();
-            },
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          _loading
-          ? const Center(child: CircularProgressIndicator())
-          : Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // Status icon with pulse when reconnecting
-                    AnimatedBuilder(
-                      animation: _pulseController,
-                      builder: (context, child) {
-                        final borderAlpha = _status is VpnStatusReconnecting
-                            ? _pulseAnim.value
-                            : 1.0;
-                        return Container(
-                          width: 140,
-                          height: 140,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _statusColor.withValues(alpha: 0.15),
-                            border: Border.all(
-                              color: _statusColor.withValues(alpha: borderAlpha),
-                              width: 3,
-                            ),
-                          ),
-                          child: child,
-                        );
-                      },
-                      child: _status is VpnStatusConnecting || _status is VpnStatusReconnecting
-                          ? const Padding(
-                              padding: EdgeInsets.all(38),
-                              child: CircularProgressIndicator(strokeWidth: 3),
-                            )
-                          : Icon(_statusIcon, size: 64, color: _statusColor),
-                    ),
-
-                    const SizedBox(height: 24),
-
-                    // Status text
-                    Text(
-                      _statusText,
-                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
-                          ),
-                    ),
-
-                    // Reconnecting attempt badge
-                    if (_status case VpnStatusReconnecting(:final attempt, :final max))
-                      Padding(
-                        padding: const EdgeInsets.only(top: 6),
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
-                          ),
-                          child: Text(
-                            'Attempt $attempt / $max',
-                            style: const TextStyle(fontSize: 12, color: Colors.orange),
-                          ),
-                        ),
-                      ),
-
-                    const SizedBox(height: 8),
-
-                    // Error message
-                    if (_status is VpnStatusError && _vpnService.errorMessage != null)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Text(
-                          _vpnService.errorMessage!,
-                          style: TextStyle(color: colorScheme.error, fontSize: 13),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-
-                    // Kill switch badge
-                    if (_status is VpnStatusError &&
-                        (_status as VpnStatusError).errorKind == 'unsupported_kill_switch')
-                      KillSwitchBadge(
-                        kind: KillSwitchBadgeKind.unsupported,
-                        onTap: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                        ),
-                      )
-                    else if (_killSwitch &&
-                        (_status is VpnStatusDisconnected ||
-                            (_status is VpnStatusError &&
-                                (_status as VpnStatusError).message
-                                    ?.contains('kill switch') == true)))
-                      KillSwitchBadge(
-                        kind: KillSwitchBadgeKind.blocked,
-                        onTap: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const SettingsScreen()),
-                          );
-                          _loadConfig();
-                        },
-                      ),
-
-                    // Server info
-                    if (_config != null)
-                      Text(
-                        _config!.server,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: colorScheme.onSurface.withValues(alpha: 0.6),
-                            ),
-                      ),
-
-                    if (_config == null)
-                      Text(
-                        'No server configured',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: colorScheme.error,
-                            ),
-                      ),
-
-                    const SizedBox(height: 48),
-
-                    // Connect/Disconnect button
-                    SizedBox(
-                      width: 220,
-                      height: 56,
-                      child: FilledButton.icon(
-                        onPressed: _canToggle ? _toggleConnection : null,
-                        icon: Icon(_status is VpnStatusConnected
-                            ? Icons.stop_rounded
-                            : Icons.play_arrow_rounded),
-                        label: Text(
-                          _buttonText,
-                          style: const TextStyle(fontSize: 18),
-                        ),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: _status is VpnStatusConnected
-                              ? colorScheme.error
-                              : null,
-                        ),
-                      ),
-                    ),
-
-                    const SizedBox(height: 16),
-
-                    // Configure button (when no config)
-                    if (_config == null)
-                      TextButton.icon(
-                        onPressed: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute(
-                                builder: (_) => const SettingsScreen()),
-                          );
-                          _loadConfig();
-                        },
-                        icon: const Icon(Icons.settings),
-                        label: const Text('Configure Server'),
-                      ),
-
-                    // Traffic stats (when connected or reconnecting)
-                    if (_trafficSnapshot != null &&
-                        (_status is VpnStatusConnected || _status is VpnStatusReconnecting)) ...[
-                      const SizedBox(height: 24),
-                      Text(
-                        '${formatBytes(_trafficSnapshot!.cumulative.bytesIn)} ↓  /  '
-                        '${formatBytes(_trafficSnapshot!.cumulative.bytesOut)} ↑',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: colorScheme.onSurface.withValues(alpha: 0.7),
-                            ),
-                      ),
-                      const SizedBox(height: 8),
-                      SizedBox(
-                        width: 280,
-                        child: StatsSparkline(
-                          samples: _trafficSnapshot!.samples,
-                          reconnecting: _status is VpnStatusReconnecting,
-                        ),
-                      ),
-                    ],
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.light,
+      child: Scaffold(
+        backgroundColor: AppColors.bg,
+        body: Stack(
+          children: [
+            AnimatedContainer(
+              duration: const Duration(milliseconds: 600),
+              curve: Curves.ease,
+              decoration: BoxDecoration(
+                gradient: RadialGradient(
+                  center: isConnected
+                      ? const Alignment(0, -0.3)
+                      : Alignment.center,
+                  radius: 0.6,
+                  colors: [
+                    glowColor.withValues(alpha: 0.13),
+                    glowColor.withValues(alpha: 0.0),
                   ],
                 ),
               ),
             ),
-          if (_appVersion.isNotEmpty)
-            Positioned(
-              left: 16,
-              bottom: 16,
-              child: Opacity(
-                opacity: 0.5,
-                child: Text(
-                  _appVersion,
-                  style: Theme.of(context).textTheme.bodySmall,
+            SafeArea(
+              child: _loading ? _buildLoading() : _buildMain(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLoading() {
+    return const Center(
+      child: CircularProgressIndicator(color: AppColors.magenta),
+    );
+  }
+
+  Widget _buildMain() {
+    return Column(
+      children: [
+        HeaderWidget(
+          subtitle: _subtitle,
+          onSettingsTap: _openSettings,
+        ),
+        Expanded(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              if (_canToggle) {
+                _toggleConnection();
+              } else if (_config == null) {
+                _openSettings();
+              }
+            },
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildCenterStage(),
+                const SizedBox(height: 24),
+                _buildStatusArea(),
+              ],
+            ),
+          ),
+        ),
+        FooterCard(
+          route: _status is VpnStatusConnected
+              ? (_config?.sni ?? _config?.server ?? '—')
+              : '— выбери маршрут —',
+          publicIp: _status is VpnStatusConnected
+              ? (_config?.server.split(':').first ?? '—')
+              : '—',
+          uptime: _status is VpnStatusConnected
+              ? _formatUptime(_uptime)
+              : '—',
+          downMbps: _latestDownMbps,
+          upMbps: _latestUpMbps,
+          isConnected: _status is VpnStatusConnected,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCenterStage() {
+    if (_showConnectAnim) {
+      return AnimatedBuilder(
+        animation: _connectAnimController,
+        builder: (context, _) {
+          double animT;
+          if (_connectAnimController.isAnimating || _connectAnimController.value < 1.0) {
+            animT = _connectAnimController.value * 3.6;
+          } else {
+            animT = 3.6 + (_connectedSecondsForAnim / 4.0).clamp(0.0, 1.0) * 2.4;
+          }
+          return SizedBox(
+            width: 300,
+            height: 360,
+            child: ConnectAnimation(t: animT),
+          );
+        },
+      );
+    }
+
+    if (_config == null) {
+      return Opacity(
+        opacity: 0.4,
+        child: StampWidget(size: 220, color: AppColors.dim),
+      );
+    }
+
+    return Stack(
+      alignment: Alignment.center,
+      children: [
+        if (_status is VpnStatusDisconnected) const PulseRings(),
+        AnimatedBuilder(
+          animation: _stampPulseController,
+          builder: (context, child) {
+            double scale = 1.0;
+            double rotation = -7.0;
+
+            if (_status is VpnStatusDisconnected) {
+              scale = 1.0 + 0.04 * (0.5 + 0.5 * _pulseValue());
+            } else if (_status is VpnStatusConnected) {
+              scale = 1.0 + 0.04 * (0.5 + 0.5 * _pulseValue());
+            } else if (_status is VpnStatusReconnecting) {
+              scale = 1.0 + 0.04 * (0.5 + 0.5 * _pulseValue());
+            } else if (_status is VpnStatusError) {
+              scale = 1.0;
+            }
+
+            if (_status is VpnStatusReconnecting || _stampShakeController.isAnimating) {
+              final shakeVal = _stampShakeController.value;
+              rotation = -7.0 + 3.0 * (shakeVal < 0.5 ? -1 : 1) * (1 - (2 * shakeVal - 1).abs());
+            }
+
+            return StampWidget(
+              size: 220,
+              color: _stampColor,
+              scale: scale,
+              rotation: rotation,
+            );
+          },
+        ),
+        if (_status case VpnStatusReconnecting(:final attempt, :final max))
+          Positioned(
+            bottom: 0,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 3),
+              decoration: BoxDecoration(
+                color: Colors.orange.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
+              ),
+              child: Text(
+                'Attempt $attempt / $max',
+                style: const TextStyle(
+                  fontFamily: AppFonts.mono,
+                  fontSize: 12,
+                  color: Colors.orange,
                 ),
               ),
             ),
-        ],
-      ),
+          ),
+      ],
+    );
+  }
+
+  double _pulseValue() {
+    final t = _stampPulseController.value * 2 * 3.14159;
+    return (t.clamp(0, 6.28) < 3.14) ? _stampPulseController.value : 1 - _stampPulseController.value;
+  }
+
+  Widget _buildStatusArea() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (_status is VpnStatusError && _vpnService.errorMessage != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(
+              _vpnService.errorMessage!,
+              style: const TextStyle(
+                fontFamily: AppFonts.mono,
+                fontSize: 12,
+                color: Color(0xFFFF4444),
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        if (_status is VpnStatusError &&
+            (_status as VpnStatusError).errorKind == 'unsupported_kill_switch')
+          KillSwitchBadge(
+            kind: KillSwitchBadgeKind.unsupported,
+            onTap: _openSettings,
+          )
+        else if (_killSwitch &&
+            (_status is VpnStatusDisconnected ||
+                (_status is VpnStatusError &&
+                    (_status as VpnStatusError).message?.contains('kill switch') == true)))
+          KillSwitchBadge(
+            kind: KillSwitchBadgeKind.blocked,
+            onTap: () async {
+              await _openSettings();
+              _loadConfig();
+            },
+          ),
+        StatusCopy(
+          caption: _statusCaption,
+          cta: _statusCta,
+          ctaColor: _ctaColor,
+        ),
+      ],
     );
   }
 
@@ -347,42 +447,14 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       (_status is VpnStatusConnected ||
           validateServerAddress(_config!.server) == null);
 
-  String get _buttonText => switch (_status) {
-        VpnStatusConnected() => 'Disconnect',
-        VpnStatusConnecting() => 'Connecting...',
-        VpnStatusReconnecting() => 'Connecting...',
-        VpnStatusError() => 'Connect',
-        VpnStatusDisconnected() => 'Connect',
-      };
-
-  IconData get _statusIcon => switch (_status) {
-        VpnStatusConnected() => Icons.shield_rounded,
-        VpnStatusConnecting() => Icons.hourglass_top_rounded,
-        VpnStatusReconnecting() => Icons.hourglass_top_rounded,
-        VpnStatusError() => Icons.error_outline_rounded,
-        VpnStatusDisconnected() => Icons.shield_outlined,
-      };
-
-  Color get _statusColor => switch (_status) {
-        VpnStatusConnected() => Colors.green,
-        VpnStatusConnecting() => Colors.orange,
-        VpnStatusReconnecting() => Colors.orange,
-        VpnStatusError() => Colors.red,
-        VpnStatusDisconnected() => Colors.grey,
-      };
-
-  String get _statusText => switch (_status) {
-        VpnStatusConnected() => 'Protected',
-        VpnStatusConnecting() => 'Connecting...',
-        VpnStatusReconnecting() => 'Reconnecting...',
-        VpnStatusError() => 'Error',
-        VpnStatusDisconnected() => 'Not Connected',
-      };
-
   Future<void> _toggleConnection() async {
     if (_status is VpnStatusConnected) {
       _log.info('User pressed Disconnect');
-      setState(() => _actionInProgress = true);
+      setState(() {
+        _actionInProgress = true;
+        _visualDisconnecting = true;
+      });
+      _stampShakeController.repeat();
       _vpnService.disconnect();
     } else if (_config != null) {
       _log.info('User pressed Connect');
@@ -390,9 +462,11 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
       final validationError = _validateConfig(_config!);
       if (validationError != null) {
         _log.error('Config validation failed: $validationError');
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(validationError)),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text(validationError)),
+          );
+        }
         return;
       }
       _log.debug('Config validated OK, starting connection');
@@ -417,10 +491,20 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     }
   }
 
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const SettingsScreen()),
+    );
+    _loadConfig();
+  }
+
   @override
   void dispose() {
+    _uptimeTimer?.cancel();
     _trafficSub?.cancel();
-    _pulseController.dispose();
+    _stampPulseController.dispose();
+    _stampShakeController.dispose();
+    _connectAnimController.dispose();
     _vpnService.removeListener(_onStatusChanged);
     _vpnService.dispose();
     super.dispose();
