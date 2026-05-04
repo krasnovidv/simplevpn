@@ -2,6 +2,7 @@ package com.simplevpn.app
 
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -164,15 +165,13 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         // Run on background thread — PackageManager can be slow.
         Thread {
             val pm = act.packageManager
-            val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-            val launchPackages = pm.queryIntentActivities(launchIntent, 0)
-                .map { it.activityInfo.packageName }
-                .toSet()
-
+            val ownPackage = act.packageName
             val apps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
                 .filter { app ->
-                    // Keep only apps that have a launcher intent (user-visible apps).
-                    launchPackages.contains(app.packageName)
+                    app.packageName != ownPackage &&
+                    ((app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 ||
+                     (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0 ||
+                     pm.getLaunchIntentForPackage(app.packageName) != null)
                 }
                 .map { app ->
                     val label = try {

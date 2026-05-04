@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>RKNPNH Foreground</title>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.55" r="0.55">
+      <stop offset="0" stop-color="#ff2bd6" stop-opacity="0.22"></stop>
+      <stop offset="1" stop-color="#ff2bd6" stop-opacity="0"></stop>
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" fill="none"></rect>
+
+  <g transform="translate(512 512) scale(1.15) translate(-512 -512)">
+    <rect width="1024" height="1024" fill="url(#glow)"></rect>
+
+    <g stroke="#00f0ff" stroke-width="4" stroke-opacity="0.5" fill="none">
+      <path d="M70 70 h44 M92 48 v44"></path>
+      <path d="M910 932 h44 M932 910 v44"></path>
+    </g>
+
+    <g transform="translate(512 512) rotate(-7) translate(-340 -300)">
+      <rect width="680" height="600" rx="32" fill="none" stroke="#ff2bd6" stroke-width="22"></rect>
+      <rect x="22" y="22" width="636" height="556" rx="18" fill="none" stroke="#ff2bd6" stroke-width="5" stroke-opacity="0.55"></rect>
+      <g fill="#ff2bd6">
+        <circle cx="30" cy="30" r="7"></circle>
+        <circle cx="650" cy="30" r="7"></circle>
+        <circle cx="30" cy="570" r="7"></circle>
+        <circle cx="650" cy="570" r="7"></circle>
+      </g>
+      <text x="340" y="252" text-anchor="middle" font-family="Archivo Black, Impact, Helvetica, Arial, sans-serif" font-size="200" font-weight="900" fill="#ff2bd6" letter-spacing="8">RKN</text>
+      <text x="340" y="432" text-anchor="middle" font-family="Archivo Black, Impact, Helvetica, Arial, sans-serif" font-size="200" font-weight="900" fill="#ff2bd6" letter-spacing="8">PNH</text>
+      <text x="340" y="520" text-anchor="middle" font-family="Space Grotesk, Helvetica, Arial, sans-serif" font-size="36" font-weight="700" fill="#ff2bd6" letter-spacing="14">★ NOT APPROVED ★</text>
+    </g>
+  </g>
+</svg>

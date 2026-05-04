@@ -3,6 +3,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_gen/gen_l10n/app_localizations.dart';
 import 'screens/home_screen.dart';
+import 'theme/app_theme.dart';
 
 void main() {
   runApp(const ProviderScope(child: SimpleVPNApp()));
@@ -24,16 +25,8 @@ class SimpleVPNApp extends StatelessWidget {
       ],
       supportedLocales: AppLocalizations.supportedLocales,
       themeMode: ThemeMode.dark,
-      darkTheme: ThemeData(
-        brightness: Brightness.dark,
-        colorSchemeSeed: const Color(0xFF3B82F6),
-        useMaterial3: true,
-      ),
-      theme: ThemeData(
-        brightness: Brightness.light,
-        colorSchemeSeed: const Color(0xFF3B82F6),
-        useMaterial3: true,
-      ),
+      darkTheme: darkTheme,
+      theme: darkTheme,
       home: const HomeScreen(),
     );
   }
