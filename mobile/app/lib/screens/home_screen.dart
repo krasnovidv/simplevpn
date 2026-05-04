@@ -264,16 +264,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return '$h:$m:$s';
   }
 
-  double get _latestDownMbps {
+  double get _latestDownKbps {
     final samples = _trafficSnapshot?.samples;
     if (samples == null || samples.isEmpty) return 0;
-    return samples.last.kbpsIn / 1024.0;
+    return samples.last.kbpsIn;
   }
 
-  double get _latestUpMbps {
+  double get _latestUpKbps {
     final samples = _trafficSnapshot?.samples;
     if (samples == null || samples.isEmpty) return 0;
-    return samples.last.kbpsOut / 1024.0;
+    return samples.last.kbpsOut;
   }
 
   @override
@@ -355,8 +355,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           uptime: _status is VpnStatusConnected
               ? _formatUptime(_uptime)
               : '—',
-          downMbps: _latestDownMbps,
-          upMbps: _latestUpMbps,
+          downKbps: _latestDownKbps,
+          upKbps: _latestUpKbps,
           isConnected: _status is VpnStatusConnected,
         ),
       ],

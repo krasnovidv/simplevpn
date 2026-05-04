@@ -6,8 +6,8 @@ class FooterCard extends StatelessWidget {
   final String route;
   final String publicIp;
   final String uptime;
-  final double downMbps;
-  final double upMbps;
+  final double downKbps;
+  final double upKbps;
   final bool isConnected;
 
   const FooterCard({
@@ -15,8 +15,8 @@ class FooterCard extends StatelessWidget {
     required this.route,
     required this.publicIp,
     required this.uptime,
-    required this.downMbps,
-    required this.upMbps,
+    required this.downKbps,
+    required this.upKbps,
     this.isConnected = false,
   });
 
@@ -55,9 +55,9 @@ class FooterCard extends StatelessWidget {
                 const SizedBox(height: 12),
                 Row(
                   children: [
-                    Expanded(child: _SpeedTile(label: '↓ DOWN', value: downMbps)),
+                    Expanded(child: _SpeedTile(label: '↓ DOWN', kbps: downKbps)),
                     const SizedBox(width: 12),
-                    Expanded(child: _SpeedTile(label: '↑ UP', value: upMbps)),
+                    Expanded(child: _SpeedTile(label: '↑ UP', kbps: upKbps)),
                   ],
                 ),
               ],
@@ -127,12 +127,22 @@ class _FooterRow extends StatelessWidget {
 
 class _SpeedTile extends StatelessWidget {
   final String label;
-  final double value;
+  final double kbps;
 
-  const _SpeedTile({required this.label, required this.value});
+  const _SpeedTile({required this.label, required this.kbps});
 
   @override
   Widget build(BuildContext context) {
+    final String valueText;
+    final String unitText;
+    if (kbps >= 1024) {
+      valueText = (kbps / 1024).toStringAsFixed(1);
+      unitText = 'MB/s';
+    } else {
+      valueText = kbps.toStringAsFixed(0);
+      unitText = 'KB/s';
+    }
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -157,7 +167,7 @@ class _SpeedTile extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(
-                value.toStringAsFixed(1),
+                valueText,
                 style: const TextStyle(
                   fontFamily: AppFonts.body,
                   fontSize: 22,
@@ -167,9 +177,9 @@ class _SpeedTile extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 4),
-              const Text(
-                'MB/s',
-                style: TextStyle(
+              Text(
+                unitText,
+                style: const TextStyle(
                   fontFamily: AppFonts.body,
                   fontSize: 10,
                   color: AppColors.dim,
