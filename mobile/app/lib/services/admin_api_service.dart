@@ -19,7 +19,9 @@ class AdminApiException implements Exception {
 }
 
 class AdminApiService {
-  final _storage = const FlutterSecureStorage();
+  final _storage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
 
   Future<http.Client> _buildClient() async {
     final skipVerifyStr = await _storage.read(key: _keyAdminSkipVerify);

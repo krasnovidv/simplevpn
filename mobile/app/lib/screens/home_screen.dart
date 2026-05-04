@@ -4,6 +4,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../services/vpn_service.dart';
 import '../services/config_storage.dart';
 import '../services/admin_api_service.dart';
+import '../services/deep_link_service.dart';
 import '../services/event_log.dart';
 import '../models/vpn_config.dart';
 import '../models/traffic_stats.dart';
@@ -25,6 +26,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   final _vpnService = VpnService();
   final _storage = ConfigStorage();
   final _adminApi = AdminApiService();
+  final _deepLinkService = DeepLinkService();
   final _log = EventLog();
   VpnStatus _status = const VpnStatusDisconnected();
   VpnConfig? _config;
@@ -37,6 +39,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   late final Animation<double> _pulseAnim;
   TrafficSnapshot? _trafficSnapshot;
   StreamSubscription<TrafficSnapshot>? _trafficSub;
+  StreamSubscription<VpnConfig>? _deepLinkSub;
 
   @override
   void initState() {
@@ -56,6 +59,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
     _loadAppVersion();
     _checkAdminConfigured();
     _vpnService.checkInitialStatus();
+    _initDeepLinks();
     _log.info('App started');
   }
 
@@ -83,6 +87,58 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
   Future<void> _checkAdminConfigured() async {
     final configured = await _adminApi.isConfigured();
     if (mounted) setState(() => _adminConfigured = configured);
+  }
+
+  Future<void> _initDeepLinks() async {
+    final initialConfig = await _deepLinkService.getInitialConfig();
+    if (initialConfig != null && mounted) {
+      _showDeepLinkConfirmation(initialConfig);
+    }
+    _deepLinkSub = _deepLinkService.configStream.listen((config) {
+      if (mounted) _showDeepLinkConfirmation(config);
+    });
+    _deepLinkService.startListening();
+  }
+
+  Future<void> _showDeepLinkConfirmation(VpnConfig config) async {
+    _log.info('Deep link config received: server=${config.server}, user=${config.username}');
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Configure VPN?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('A shared VPN configuration was received:'),
+            const SizedBox(height: 12),
+            Text('Server: ${config.server}'),
+            Text('Username: ${config.username}'),
+            if (config.sni.isNotEmpty) Text('SNI: ${config.sni}'),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) {
+      await _storage.saveConfig(config);
+      _log.info('Deep link config saved');
+      _loadConfig();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('VPN configured from shared link')),
+        );
+      }
+    }
   }
 
   Future<void> _loadAppVersion() async {
@@ -419,6 +475,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
+    _deepLinkSub?.cancel();
+    _deepLinkService.dispose();
     _trafficSub?.cancel();
     _pulseController.dispose();
     _vpnService.removeListener(_onStatusChanged);

@@ -53,6 +53,7 @@ type APIConfig struct {
 	BearerToken string `yaml:"bearer_token"`
 	CertFile   string `yaml:"cert"`
 	KeyFile    string `yaml:"key"`
+	ApkPath    string `yaml:"apk_path"`
 }
 
 // ClientTransportConfig holds client-side transport settings.

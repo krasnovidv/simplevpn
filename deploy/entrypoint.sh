@@ -5,8 +5,15 @@ CONFIG_DIR="/etc/simplevpn"
 CONFIG_FILE="$CONFIG_DIR/server.yaml"
 USERS_FILE="$CONFIG_DIR/users.yaml"
 
+# Detect default outbound interface
+IFACE=$(ip route | awk '/default/ {print $5; exit}')
+IFACE=${IFACE:-eth0}
+
 # Set up NAT for VPN clients
-iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o eth0 -j MASQUERADE
+iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o "$IFACE" -j MASQUERADE
+
+# MSS clamping — prevents PMTUD black holes (YouTube, large downloads stalling)
+iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 
 # Generate server_key on first run if config doesn't exist
 if [ ! -f "$CONFIG_FILE" ]; then
