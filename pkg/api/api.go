@@ -110,6 +110,8 @@ func NewServer(cfg *config.ServerConfig, version string, store *auth.FileStore) 
 	mux.HandleFunc("/api/clients/", s.authMiddleware(s.handleClientAction))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
 	s.registerUserRoutes(mux)
+	mux.HandleFunc("/join", s.handleJoin)
+	mux.HandleFunc("/download/", s.handleDownload)
 
 	s.mux = mux
 	s.httpServer = &http.Server{

@@ -11,4 +11,13 @@ class AppDelegate: FlutterAppDelegate {
         VpnPlugin.register(with: registrar(forPlugin: "VpnPlugin")!)
         return super.application(application, didFinishLaunchingWithOptions: launchOptions)
     }
+
+    override func application(
+        _ app: UIApplication,
+        open url: URL,
+        options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+    ) -> Bool {
+        print("[SimpleVPN] Deep link received: \(url)")
+        return super.application(app, open: url, options: options)
+    }
 }

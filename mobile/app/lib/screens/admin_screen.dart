@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import '../models/admin_models.dart';
 import '../services/admin_api_service.dart';
+import '../services/event_log.dart';
 import 'admin_qr_screen.dart';
+import 'share_credentials_screen.dart';
 
 class AdminScreen extends StatefulWidget {
   const AdminScreen({super.key});
@@ -14,6 +16,7 @@ class _AdminScreenState extends State<AdminScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabs;
   final _api = AdminApiService();
+  final _log = EventLog();
 
   // Users tab state
   List<AdminUser> _users = [];
@@ -126,6 +129,36 @@ class _AdminScreenState extends State<AdminScreen>
     try {
       await _api.createUser(usernameCtrl.text, passwordCtrl.text);
       _loadUsers();
+      if (!mounted) return;
+      _log.debug('User created: ${usernameCtrl.text}, offering share');
+      final share = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('User Created'),
+          content: Text('Share credentials for "${usernameCtrl.text}"?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Later'),
+            ),
+            FilledButton.icon(
+              onPressed: () => Navigator.pop(ctx, true),
+              icon: const Icon(Icons.share),
+              label: const Text('Share Now'),
+            ),
+          ],
+        ),
+      );
+      if (share == true && mounted) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ShareCredentialsScreen(
+              username: usernameCtrl.text,
+              prefilledPassword: passwordCtrl.text,
+            ),
+          ),
+        );
+      }
     } on AdminApiException catch (e) {
       _showError('Create failed: ${e.message}');
     } catch (e) {
@@ -394,6 +427,13 @@ class _AdminScreenState extends State<AdminScreen>
       trailing: PopupMenuButton<String>(
         onSelected: (action) {
           switch (action) {
+            case 'share':
+              _log.debug('Share credentials tapped for user: ${user.username}');
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (_) => ShareCredentialsScreen(username: user.username),
+                ),
+              );
             case 'password':
               _showChangePasswordDialog(user.username);
             case 'toggle':
@@ -403,6 +443,14 @@ class _AdminScreenState extends State<AdminScreen>
           }
         },
         itemBuilder: (_) => [
+          const PopupMenuItem(
+            value: 'share',
+            child: ListTile(
+              leading: Icon(Icons.share),
+              title: Text('Share Credentials'),
+              dense: true,
+            ),
+          ),
           const PopupMenuItem(
             value: 'password',
             child: ListTile(
