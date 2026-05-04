@@ -86,6 +86,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _onStatusChanged(VpnStatus status) {
+    if (!mounted) return;
     final prevStatus = _status;
     setState(() {
       _status = status;
