@@ -1,8 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/split_tunnel_config.dart';
 import '../services/config_storage.dart';
+import '../theme/app_theme.dart';
 
 class SplitTunnelingScreen extends StatefulWidget {
   const SplitTunnelingScreen({super.key});
@@ -174,6 +176,39 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
     );
   }
 
+  Widget _buildAppIcon(Map<String, String> app) {
+    final b64 = app['iconBase64'];
+    if (b64 != null && b64.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: Image.memory(
+          base64Decode(b64),
+          width: 44,
+          height: 44,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: AppColors.dim2,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.android, color: AppColors.dim, size: 24),
+          ),
+        ),
+      );
+    }
+    return Container(
+      width: 44,
+      height: 44,
+      decoration: BoxDecoration(
+        color: AppColors.dim2,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: const Icon(Icons.android, color: AppColors.dim, size: 24),
+    );
+  }
+
   Widget _buildAppsTab() {
     if (!Platform.isAndroid) {
       return const Center(
@@ -197,50 +232,169 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
                 (a['packageName'] ?? '').toLowerCase().contains(q);
           }).toList();
 
+    final selectedFirst = List<Map<String, String>>.from(filtered)
+      ..sort((a, b) {
+        final aSelected = _config.apps.contains(a['packageName']) ? 0 : 1;
+        final bSelected = _config.apps.contains(b['packageName']) ? 0 : 1;
+        if (aSelected != bSelected) return aSelected.compareTo(bSelected);
+        return (a['label'] ?? '').compareTo(b['label'] ?? '');
+      });
+
+    final disabled = _config.mode == SplitTunnelMode.off;
+    final selectedCount = _config.apps.length;
+
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
           child: TextField(
-            decoration: const InputDecoration(
-              hintText: 'Поиск приложений',
-              prefixIcon: Icon(Icons.search),
-              border: OutlineInputBorder(),
-              isDense: true,
+            decoration: InputDecoration(
+              hintText: 'Поиск приложений...',
+              prefixIcon: const Icon(Icons.search, size: 22),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: AppColors.dim2),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: AppColors.dim2),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: AppColors.magenta),
+              ),
+              filled: true,
+              fillColor: AppColors.dim2,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
             ),
             onChanged: (v) => setState(() => _appSearch = v),
           ),
         ),
-        if (_config.mode == SplitTunnelMode.off)
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Text('Включите режим для выбора приложений.'),
+        if (disabled)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.dim2,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.info_outline, color: AppColors.dim, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Включите режим для выбора приложений',
+                      style: TextStyle(color: AppColors.dim, fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(
+              children: [
+                Text(
+                  'Выбрано: $selectedCount',
+                  style: TextStyle(
+                    color: selectedCount > 0 ? AppColors.cyan : AppColors.dim,
+                    fontSize: 13,
+                    fontFamily: AppFonts.mono,
+                  ),
+                ),
+                const Spacer(),
+                Text(
+                  '${filtered.length} приложений',
+                  style: const TextStyle(color: AppColors.dim, fontSize: 13),
+                ),
+              ],
+            ),
           ),
+        const SizedBox(height: 4),
         Expanded(
           child: ListView.builder(
-            itemCount: filtered.length,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: selectedFirst.length,
             itemBuilder: (_, i) {
-              final app = filtered[i];
+              final app = selectedFirst[i];
               final pkg = app['packageName'] ?? '';
               final label = app['label'] ?? pkg;
               final selected = _config.apps.contains(pkg);
-              return CheckboxListTile(
-                title: Text(label),
-                subtitle: Text(pkg, style: const TextStyle(fontSize: 11)),
-                value: selected,
-                onChanged: _config.mode == SplitTunnelMode.off
-                    ? null
-                    : (_) => _toggleApp(pkg),
-                secondary: app['iconBase64']?.isNotEmpty == true
-                    ? Image.memory(
-                        Uri.parse('data:image/png;base64,${app['iconBase64']}')
-                            .data!
-                            .contentAsBytes(),
-                        width: 32,
-                        height: 32,
-                        errorBuilder: (_, __, ___) => const Icon(Icons.android),
-                      )
-                    : const Icon(Icons.android),
+
+              return Padding(
+                padding: const EdgeInsets.symmetric(vertical: 3),
+                child: Material(
+                  color: selected ? AppColors.magenta.withValues(alpha: 0.1) : Colors.transparent,
+                  borderRadius: BorderRadius.circular(12),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: disabled ? null : () => _toggleApp(pkg),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      child: Row(
+                        children: [
+                          _buildAppIcon(app),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  label,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w500,
+                                    color: disabled
+                                        ? AppColors.dim
+                                        : AppColors.white,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  pkg,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontFamily: AppFonts.mono,
+                                    color: AppColors.dim,
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IgnorePointer(
+                            child: SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: Checkbox(
+                                value: selected,
+                                onChanged: disabled ? null : (_) {},
+                                activeColor: AppColors.magenta,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                side: BorderSide(
+                                  color: disabled ? AppColors.dim2 : AppColors.dim,
+                                  width: 1.5,
+                                ),
+                                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                visualDensity: VisualDensity.compact,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               );
             },
           ),

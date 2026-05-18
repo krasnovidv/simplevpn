@@ -62,7 +62,7 @@ class _ConnectAnimPainter extends CustomPainter {
     final armR = (-10 - armT * 40) * math.pi / 180;
     final tip = Offset(
       pnhPos.dx + math.cos(armR) * 60,
-      pnhPos.dy - 28 + math.sin(armR) * 60,
+      pnhPos.dy - 2 + math.sin(armR) * 60,
     );
     final target = Offset(rknPos.dx - 18, rknPos.dy - 20);
     final ctrl = Offset(
@@ -88,6 +88,66 @@ class _ConnectAnimPainter extends CustomPainter {
     final opacity = (1 - splitT).clamp(0.0, 1.0);
     if (opacity < 0.01) return;
 
+    canvas.save();
+    canvas.translate(w / 2, h / 2);
+    canvas.rotate(-7.0 * math.pi / 180);
+
+    // Stamp border fading out
+    final borderOpacity = _clamp01(1 - splitT * 2.5);
+    if (borderOpacity > 0.01) {
+      const stampW = 158.0;
+      const stampH = 141.0;
+      final borderPaint = Paint()
+        ..color = AppColors.magenta.withValues(alpha: borderOpacity)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 5;
+      final innerBorderPaint = Paint()
+        ..color = AppColors.magenta.withValues(alpha: borderOpacity * 0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4;
+      final dotPaint = Paint()
+        ..color = AppColors.magenta.withValues(alpha: borderOpacity);
+
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: stampW, height: stampH),
+          const Radius.circular(8),
+        ),
+        borderPaint,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromCenter(center: Offset.zero, width: stampW - 11, height: stampH - 11),
+          const Radius.circular(5),
+        ),
+        innerBorderPaint,
+      );
+      final corners = [
+        Offset(-stampW / 2 + 8, -stampH / 2 + 8),
+        Offset(stampW / 2 - 8, -stampH / 2 + 8),
+        Offset(-stampW / 2 + 8, stampH / 2 - 8),
+        Offset(stampW / 2 - 8, stampH / 2 - 8),
+      ];
+      for (final c in corners) {
+        canvas.drawCircle(c, 1.8, dotPaint);
+      }
+
+      // Subtext
+      _drawCenteredText(
+        canvas,
+        '★ NOT APPROVED ★',
+        Offset(0, 38),
+        TextStyle(
+          fontFamily: AppFonts.body,
+          fontSize: 8,
+          fontWeight: FontWeight.w700,
+          color: AppColors.magenta.withValues(alpha: borderOpacity),
+          letterSpacing: 3,
+        ),
+      );
+    }
+
+    // Text splitting apart under tilt
     final rknStyle = TextStyle(
       fontFamily: AppFonts.display,
       fontSize: 44,
@@ -96,11 +156,13 @@ class _ConnectAnimPainter extends CustomPainter {
       letterSpacing: 2,
     );
 
-    final rknOffset = Offset(w / 2 + splitT * 40, h / 2 - 10 - splitT * 15);
-    final pnhOffset = Offset(w / 2 - splitT * 40, h / 2 + 30 + splitT * 15);
+    final rknOffset = Offset(splitT * 50, -20 - splitT * 25);
+    final pnhOffset = Offset(-splitT * 50, 20 + splitT * 25);
 
     _drawCenteredText(canvas, 'RKN', rknOffset, rknStyle);
     _drawCenteredText(canvas, 'PNH', pnhOffset, rknStyle);
+
+    canvas.restore();
 
     if (splitT > 0 && splitT < 1) {
       final particlePaint = Paint()
@@ -145,30 +207,10 @@ class _ConnectAnimPainter extends CustomPainter {
       paint,
     );
 
-    final labelBg = Paint()..color = AppColors.bgDeep.withValues(alpha: 0.45 * figT);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(pos.dx, pos.dy - 10), width: 44, height: 14),
-        const Radius.circular(3),
-      ),
-      labelBg,
-    );
-    _drawCenteredText(
-      canvas,
-      'PNH',
-      Offset(pos.dx, pos.dy - 10),
-      TextStyle(
-        fontFamily: AppFonts.display,
-        fontSize: 11,
-        fontWeight: FontWeight.w900,
-        color: AppColors.white.withValues(alpha: figT),
-        letterSpacing: 1,
-      ),
-    );
 
     final armR = (-10 - armT * 40) * math.pi / 180;
     canvas.save();
-    canvas.translate(pos.dx + 12, pos.dy - 28);
+    canvas.translate(pos.dx + 12, pos.dy - 2);
     canvas.rotate(armR);
     canvas.drawRRect(
       RRect.fromRectAndRadius(
@@ -261,24 +303,6 @@ class _ConnectAnimPainter extends CustomPainter {
       ),
     );
 
-    final bowlPath = Path()
-      ..moveTo(pos.dx - 38, pos.dy - 22)
-      ..quadraticBezierTo(pos.dx - 32, pos.dy - 14, pos.dx - 22, pos.dy - 8)
-      ..quadraticBezierTo(pos.dx - 14, pos.dy - 4, pos.dx - 12, pos.dy - 8)
-      ..quadraticBezierTo(pos.dx - 10, pos.dy - 18, pos.dx - 18, pos.dy - 22)
-      ..close();
-    canvas.drawPath(bowlPath, paint);
-
-    if (healing > 0) {
-      canvas.drawOval(
-        Rect.fromCenter(
-          center: Offset(pos.dx - 24, pos.dy - 16),
-          width: 10 + healing * 4,
-          height: 3 + healing,
-        ),
-        Paint()..color = const Color(0xFF7df9ff).withValues(alpha: (0.7 + healing * 0.3) * figT),
-      );
-    }
   }
 
   void _drawStream(

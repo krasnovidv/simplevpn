@@ -6,14 +6,16 @@ import '../services/config_storage.dart';
 import '../services/deep_link_service.dart';
 import '../services/admin_api_service.dart';
 import '../services/event_log.dart';
+import '../services/update_service.dart';
 import '../models/vpn_config.dart';
-import '../models/traffic_stats.dart';
+import '../models/update_info.dart';
+
 import '../utils/validators.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stamp_widget.dart';
 import '../widgets/connect_animation.dart';
 import '../widgets/header_widget.dart';
-import '../widgets/footer_card.dart';
+import '../widgets/footer_map.dart';
 import '../widgets/status_copy.dart';
 import '../widgets/pulse_rings.dart';
 import '../widgets/kill_switch_badge.dart';
@@ -33,15 +35,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final _deepLinkService = DeepLinkService();
   final _adminApi = AdminApiService();
   final _log = EventLog();
+  final _updateService = UpdateService();
   VpnStatus _status = const VpnStatusDisconnected();
   VpnConfig? _config;
   bool _loading = true;
   bool _actionInProgress = false;
   bool _killSwitch = false;
   bool _adminConfigured = false;
-  TrafficSnapshot? _trafficSnapshot;
-  StreamSubscription<TrafficSnapshot>? _trafficSub;
   StreamSubscription<VpnConfig>? _deepLinkSub;
+  UpdateInfo? _updateInfo;
+  Timer? _updateTimer;
 
   late final AnimationController _stampPulseController;
   late final AnimationController _stampShakeController;
@@ -75,13 +78,12 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
 
     _vpnService.addListener(_onStatusChanged);
-    _trafficSub = _vpnService.trafficStream.listen((snapshot) {
-      if (mounted) setState(() => _trafficSnapshot = snapshot);
-    });
     _loadConfig();
     _checkAdminConfigured();
     _vpnService.checkInitialStatus();
     _initDeepLinks();
+    _checkForUpdate();
+    _updateTimer = Timer.periodic(const Duration(minutes: 30), (_) => _checkForUpdate());
     _log.info('App started');
   }
 
@@ -268,23 +270,150 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         _ => AppColors.magenta,
       };
 
-  String _formatUptime(Duration d) {
-    final h = d.inHours.toString().padLeft(2, '0');
-    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$h:$m:$s';
+
+  Future<void> _checkForUpdate() async {
+    _log.debug('Checking for updates...');
+    final info = await _updateService.checkForUpdate();
+    if (mounted) {
+      setState(() => _updateInfo = info);
+      if (info != null) {
+        _log.info('Update available: ${info.version} (code=${info.versionCode})');
+      }
+    }
   }
 
-  double get _latestDownKbps {
-    final samples = _trafficSnapshot?.samples;
-    if (samples == null || samples.isEmpty) return 0;
-    return samples.last.kbpsIn;
+  void _showUpdateDialog() {
+    final info = _updateInfo;
+    if (info == null) return;
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Text(
+          'Обновление v${info.version}',
+          style: const TextStyle(
+            fontFamily: AppFonts.display,
+            color: AppColors.cyan,
+          ),
+        ),
+        content: Text(
+          info.changelog.isNotEmpty ? info.changelog : 'Доступна новая версия приложения.',
+          style: const TextStyle(
+            fontFamily: AppFonts.body,
+            color: Colors.white70,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              _updateService.dismissVersion(info.versionCode);
+              setState(() => _updateInfo = null);
+              _log.info('User skipped version ${info.versionCode}');
+            },
+            child: const Text('Пропустить', style: TextStyle(color: Colors.white38)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Не сейчас', style: TextStyle(color: Colors.white54)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: AppColors.cyan),
+            onPressed: () {
+              Navigator.pop(ctx);
+              _startDownload(info);
+            },
+            child: const Text('Обновить', style: TextStyle(color: Colors.black)),
+          ),
+        ],
+      ),
+    );
   }
 
-  double get _latestUpKbps {
-    final samples = _trafficSnapshot?.samples;
-    if (samples == null || samples.isEmpty) return 0;
-    return samples.last.kbpsOut;
+  void _startDownload(UpdateInfo info) {
+    double progress = 0;
+    bool downloading = true;
+    String? error;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          if (downloading && progress == 0) {
+            _updateService.downloadApk(info, (p) {
+              setDialogState(() => progress = p);
+            }).then((path) {
+              if (path != null) {
+                Navigator.pop(ctx);
+                _updateService.installApk(path);
+              } else {
+                setDialogState(() {
+                  downloading = false;
+                  error = 'Ошибка загрузки';
+                });
+              }
+            }).catchError((e) {
+              setDialogState(() {
+                downloading = false;
+                error = 'Ошибка: $e';
+              });
+            });
+            progress = 0.01;
+          }
+
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1A2E),
+            title: Text(
+              downloading ? 'Скачивание…' : 'Ошибка',
+              style: const TextStyle(
+                fontFamily: AppFonts.display,
+                color: AppColors.cyan,
+              ),
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (downloading) ...[
+                  LinearProgressIndicator(
+                    value: progress > 0.01 ? progress : null,
+                    backgroundColor: Colors.white12,
+                    valueColor: const AlwaysStoppedAnimation(AppColors.cyan),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '${(progress * 100).toInt()}%',
+                    style: const TextStyle(
+                      fontFamily: AppFonts.mono,
+                      color: Colors.white54,
+                    ),
+                  ),
+                ],
+                if (error != null)
+                  Text(error!, style: const TextStyle(color: Color(0xFFFF4444))),
+              ],
+            ),
+            actions: [
+              if (!downloading) ...[
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Закрыть', style: TextStyle(color: Colors.white54)),
+                ),
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: AppColors.cyan),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    _startDownload(info);
+                  },
+                  child: const Text('Повторить', style: TextStyle(color: Colors.black)),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -340,6 +469,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             MaterialPageRoute(builder: (_) => const AdminScreen()),
           ),
         ),
+        if (_updateInfo != null)
+          GestureDetector(
+            onTap: _showUpdateDialog,
+            child: Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.cyan.withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.cyan.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.system_update, color: AppColors.cyan, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Доступно обновление v${_updateInfo!.version}',
+                      style: const TextStyle(
+                        fontFamily: AppFonts.body,
+                        fontSize: 13,
+                        color: AppColors.cyan,
+                      ),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right, color: AppColors.cyan, size: 20),
+                ],
+              ),
+            ),
+          ),
         Expanded(
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
@@ -360,19 +519,16 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
         ),
-        FooterCard(
-          route: _status is VpnStatusConnected
-              ? (_config?.sni ?? _config?.server ?? '—')
-              : '— выбери маршрут —',
-          publicIp: _status is VpnStatusConnected
-              ? (_config?.server.split(':').first ?? '—')
-              : '—',
-          uptime: _status is VpnStatusConnected
-              ? _formatUptime(_uptime)
-              : '—',
-          downKbps: _latestDownKbps,
-          upKbps: _latestUpKbps,
-          isConnected: _status is VpnStatusConnected,
+        FooterMap(
+          state: _visualDisconnecting
+              ? FooterMapState.disconnecting
+              : switch (_status) {
+                  VpnStatusConnected() => FooterMapState.connected,
+                  VpnStatusConnecting() || VpnStatusReconnecting() =>
+                    FooterMapState.connecting,
+                  _ => FooterMapState.idle,
+                },
+          secs: _uptime.inSeconds,
         ),
       ],
     );
@@ -575,7 +731,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _deepLinkSub?.cancel();
     _deepLinkService.dispose();
     _uptimeTimer?.cancel();
-    _trafficSub?.cancel();
+    _updateTimer?.cancel();
+
     _stampPulseController.dispose();
     _stampShakeController.dispose();
     _connectAnimController.dispose();

@@ -28,8 +28,10 @@ VOLUME ["/etc/simplevpn"]
 
 # VPN port
 EXPOSE 443/tcp
-# Management API port
+# Management API port (TLS)
 EXPOSE 8443/tcp
+# Public HTTP port (join page, APK download)
+EXPOSE 8080/tcp
 
 ENTRYPOINT ["entrypoint.sh"]
 CMD ["-config", "/etc/simplevpn/server.yaml"]

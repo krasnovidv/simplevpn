@@ -221,6 +221,11 @@ func main() {
 				log.Printf("API server error: %v", err)
 			}
 		}()
+		go func() {
+			if err := apiSrv.ListenAndServeHTTP(); err != nil {
+				log.Printf("HTTP public server error: %v", err)
+			}
+		}()
 	}
 
 	// -- TUN→client relay (single goroutine, routes by dest IP) --

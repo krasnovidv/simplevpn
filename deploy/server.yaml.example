@@ -20,7 +20,10 @@ transport:
 api:
   enabled: true
   listen: ":8443"
+  http_listen: ":8080"
   bearer_token: "CHANGE_ME_TO_RANDOM_TOKEN"
+  apk_path: "/opt/simplevpn/simplevpn.apk"
+  update_manifest: "/opt/simplevpn/update.json"
 
 # Logging
 log_level: "info"

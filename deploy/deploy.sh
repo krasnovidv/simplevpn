@@ -66,7 +66,9 @@ log_level: "info"
 api:
   enabled: true
   listen: ":8443"
+  http_listen: ":8080"
   bearer_token: "${API_TOKEN}"
+  apk_path: "/opt/simplevpn/simplevpn.apk"
 EOF
 
     echo "Config created: config/server.yaml"

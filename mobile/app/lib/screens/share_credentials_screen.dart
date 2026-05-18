@@ -68,13 +68,14 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
     if (config == null) return null;
     final json = config.toJson();
     final encoded = encodeConfigToBase64Url(json);
-    return 'simplevpn://connect/$encoded';
+    final host = _serverConfig!.server.split(':').first;
+    return 'http://$host:8080/join#$encoded';
   }
 
   String get _shareText {
     final link = _shareLink ?? '';
     return 'RKNPNH VPN — конфиг для ${widget.username}\n\n'
-        'Открой ссылку на телефоне (нужно приложение RKNPNH):\n$link';
+        'Открой ссылку на телефоне:\n$link';
   }
 
   Future<void> _copyLink() async {
@@ -90,9 +91,19 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
   }
 
   Future<void> _shareLink_() async {
-    if (_shareLink == null) return;
-    _log.debug('ShareCredentials: sharing link');
-    await Share.share(_shareText);
+    final link = _shareLink;
+    if (link == null) return;
+    await Clipboard.setData(ClipboardData(text: link));
+    _log.debug('ShareCredentials: sharing link (copied to clipboard first)');
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Ссылка скопирована в буфер'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+    Share.share(_shareText);
   }
 
   Future<void> _shareQrImage() async {

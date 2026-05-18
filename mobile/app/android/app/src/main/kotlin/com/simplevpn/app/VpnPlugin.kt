@@ -6,11 +6,13 @@ import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.Uri
 import android.net.VpnService
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -95,6 +97,10 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 result.success(logs)
             }
             "listInstalledApps" -> listInstalledApps(result)
+            "installApk" -> {
+                val path = call.argument<String>("path") ?: ""
+                installApk(path, result)
+            }
             "getStats" -> {
                 val stats = try { Vpnlib.getStats() } catch (e: Exception) {
                     Log.w(TAG, "Vpnlib.getStats() failed: ${e.message}")
@@ -170,8 +176,7 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 .filter { app ->
                     app.packageName != ownPackage &&
                     ((app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 ||
-                     (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0 ||
-                     pm.getLaunchIntentForPackage(app.packageName) != null)
+                     (app.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0)
                 }
                 .map { app ->
                     val label = try {
@@ -180,9 +185,9 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
                     val iconBase64 = try {
                         val drawable = pm.getApplicationIcon(app.packageName)
-                        val bmp = Bitmap.createBitmap(48, 48, Bitmap.Config.ARGB_8888)
+                        val bmp = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888)
                         val canvas = Canvas(bmp)
-                        drawable.setBounds(0, 0, 48, 48)
+                        drawable.setBounds(0, 0, 96, 96)
                         drawable.draw(canvas)
                         val out = ByteArrayOutputStream()
                         bmp.compress(Bitmap.CompressFormat.PNG, 80, out)
@@ -197,6 +202,38 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             cachedAppList = apps
             Handler(Looper.getMainLooper()).post { result.success(apps) }
         }.start()
+    }
+
+    private fun installApk(path: String, result: Result) {
+        Log.d(TAG, "installApk: path=$path")
+        val act = activity ?: run {
+            Log.e(TAG, "installApk: no activity")
+            result.error("NO_ACTIVITY", "No activity available", null)
+            return
+        }
+
+        try {
+            val file = java.io.File(path)
+            if (!file.exists()) {
+                Log.e(TAG, "installApk: file not found at $path")
+                result.error("FILE_NOT_FOUND", "APK file not found", null)
+                return
+            }
+
+            val uri = FileProvider.getUriForFile(act, "${act.packageName}.fileprovider", file)
+            Log.d(TAG, "installApk: uri=$uri")
+
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            act.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "installApk failed: ${e.message}", e)
+            result.error("INSTALL_FAILED", e.message, null)
+        }
     }
 
     private fun stopVpn(result: Result) {

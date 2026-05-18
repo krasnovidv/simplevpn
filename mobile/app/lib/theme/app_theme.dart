@@ -6,6 +6,7 @@ abstract final class AppColors {
   static const magenta = Color(0xFFff2bd6);
   static const magentaHi = Color(0xFFff5ce0);
   static const cyan = Color(0xFF00f0ff);
+  static const cyanHi = Color(0xFF7af6ff);
   static const white = Color(0xFFF5F3FF);
   static const dim = Color(0xFF5a4a7a);
   static const dim2 = Color(0xFF2a1f3a);

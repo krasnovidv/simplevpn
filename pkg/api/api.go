@@ -112,6 +112,7 @@ func NewServer(cfg *config.ServerConfig, version string, store *auth.FileStore) 
 	s.registerUserRoutes(mux)
 	mux.HandleFunc("/join", s.handleJoin)
 	mux.HandleFunc("/download/", s.handleDownload)
+	mux.HandleFunc("/api/update", s.handleUpdate)
 
 	s.mux = mux
 	s.httpServer = &http.Server{
@@ -184,6 +185,29 @@ func (s *Server) ListenAndServeTLS() error {
 	tlsLn := tls.NewListener(ln, tlsCfg)
 	log.Printf("[api] Management API listening on %s (TLS)", s.cfg.API.Listen)
 	return s.httpServer.Serve(tlsLn)
+}
+
+// ListenAndServeHTTP starts a plain HTTP server for public pages (/join, /download).
+func (s *Server) ListenAndServeHTTP() error {
+	addr := s.cfg.API.HTTPListen
+	if addr == "" {
+		addr = ":8080"
+	}
+
+	pubMux := http.NewServeMux()
+	pubMux.HandleFunc("/join", s.handleJoin)
+	pubMux.HandleFunc("/download/", s.handleDownload)
+	pubMux.HandleFunc("/api/update", s.handleUpdate)
+
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      pubMux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	log.Printf("[api] Public HTTP server listening on %s", addr)
+	return srv.ListenAndServe()
 }
 
 // Shutdown gracefully shuts down the API server.

@@ -11,6 +11,34 @@ pipeline {
     }
 
     stages {
+        stage('Build APK') {
+            steps {
+                bat 'D:\\flutter\\bin\\flutter.bat build apk --release'
+            }
+        }
+
+        stage('Generate Update Manifest') {
+            steps {
+                script {
+                    def pubspec = readFile('mobile/app/pubspec.yaml')
+                    def matcher = pubspec =~ /version:\s*(\S+)\+(\d+)/
+                    if (!matcher.find()) {
+                        error 'Could not parse version from pubspec.yaml'
+                    }
+                    def versionName = matcher.group(1)
+                    def versionCode = matcher.group(2)
+                    echo "Extracted version: ${versionName}+${versionCode}"
+                    def manifest = """{
+  "version": "${versionName}",
+  "versionCode": ${versionCode},
+  "downloadUrl": "/download/simplevpn.apk",
+  "changelog": "Доступна новая версия ${versionName}"
+}"""
+                    writeFile file: 'update.json', text: manifest
+                }
+            }
+        }
+
         stage('Deploy to VPS') {
             steps {
                 // Sync source files to VPS
@@ -23,6 +51,18 @@ pipeline {
                     sshpass -p "\${VPS_CREDS_PSW}" scp -o StrictHostKeyChecking=no -r \
                         cmd pkg deploy \
                         \${VPS_USER}@\${VPS_HOST}:\${REMOTE_DIR}/
+                """
+
+                // Upload APK and update manifest
+                sh """
+                    sshpass -p "\${VPS_CREDS_PSW}" scp -o StrictHostKeyChecking=no \
+                        mobile/app/build/app/outputs/flutter-apk/app-release.apk \
+                        \${VPS_USER}@\${VPS_HOST}:\${REMOTE_DIR}/simplevpn.apk
+                """
+                sh """
+                    sshpass -p "\${VPS_CREDS_PSW}" scp -o StrictHostKeyChecking=no \
+                        update.json \
+                        \${VPS_USER}@\${VPS_HOST}:\${REMOTE_DIR}/update.json
                 """
 
                 // Build and restart container on VPS
@@ -38,8 +78,11 @@ pipeline {
                            --device /dev/net/tun \
                            -v \${REMOTE_DIR}/config:/etc/simplevpn \
                            -v \${REMOTE_DIR}/certs:/etc/simplevpn/certs \
+                           -v \${REMOTE_DIR}/simplevpn.apk:/opt/simplevpn/simplevpn.apk:ro \
+                           -v \${REMOTE_DIR}/update.json:/opt/simplevpn/update.json:ro \
                            -p 443:443 \
                            -p 8443:8443 \
+                           -p 8080:8080 \
                            \${IMAGE_NAME}"
                 """
             }

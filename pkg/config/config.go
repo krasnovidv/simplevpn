@@ -48,12 +48,14 @@ type TransportConfig struct {
 
 // APIConfig holds management API configuration.
 type APIConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	Listen     string `yaml:"listen"`
-	BearerToken string `yaml:"bearer_token"`
-	CertFile   string `yaml:"cert"`
-	KeyFile    string `yaml:"key"`
-	ApkPath    string `yaml:"apk_path"`
+	Enabled        bool   `yaml:"enabled"`
+	Listen         string `yaml:"listen"`
+	HTTPListen     string `yaml:"http_listen"`
+	BearerToken    string `yaml:"bearer_token"`
+	CertFile       string `yaml:"cert"`
+	KeyFile        string `yaml:"key"`
+	ApkPath        string `yaml:"apk_path"`
+	UpdateManifest string `yaml:"update_manifest"`
 }
 
 // ClientTransportConfig holds client-side transport settings.
