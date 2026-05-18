@@ -1,7 +1,8 @@
 import 'dart:convert';
-import 'dart:developer' as dev;
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -16,14 +17,17 @@ const _dismissedVersionKey = 'dismissed_update_version_code';
 class UpdateService {
   static const _tag = 'UpdateService';
 
+  final _secureStorage = const FlutterSecureStorage(
+    aOptions: AndroidOptions(encryptedSharedPreferences: true),
+  );
+
   String? _serverHost;
 
   Future<String?> _getServerHost() async {
     if (_serverHost != null) return _serverHost;
-    final prefs = await SharedPreferences.getInstance();
-    final cfgStr = prefs.getString('vpn_config');
+    final cfgStr = await _secureStorage.read(key: 'vpn_config');
     if (cfgStr == null || cfgStr.isEmpty) {
-      dev.log('[$_tag] No VPN config found in SharedPreferences', level: 800);
+      debugPrint('[$_tag] No VPN config found in secure storage');
       return null;
     }
     try {
@@ -31,14 +35,14 @@ class UpdateService {
       final server = map['server'] as String? ?? '';
       final host = server.split(':').first;
       if (host.isEmpty) {
-        dev.log('[$_tag] Empty host in VPN config server=$server', level: 900);
+        debugPrint('[$_tag] Empty host in VPN config server=$server');
         return null;
       }
       _serverHost = host;
-      dev.log('[$_tag] Resolved server host=$host from config', level: 500);
+      debugPrint('[$_tag] Resolved server host=$host from config');
       return host;
     } catch (e) {
-      dev.log('[$_tag] Failed to parse VPN config: $e', level: 900);
+      debugPrint('[$_tag] Failed to parse VPN config: $e');
       return null;
     }
   }
@@ -55,7 +59,7 @@ class UpdateService {
     if (host == null) return null;
 
     final url = 'https://$host:8443/api/update';
-    dev.log('[$_tag] Checking for update at $url', level: 500);
+    debugPrint('[$_tag] Checking for update at $url');
 
     final client = _buildClient();
     try {
@@ -63,35 +67,35 @@ class UpdateService {
           .get(Uri.parse(url))
           .timeout(const Duration(seconds: 15));
 
-      dev.log('[$_tag] Update check response: status=${resp.statusCode}', level: 500);
+      debugPrint('[$_tag] Update check response: status=${resp.statusCode}');
 
       if (resp.statusCode != 200) {
-        dev.log('[$_tag] Update check failed: ${resp.statusCode} ${resp.body}', level: 800);
+        debugPrint('[$_tag] Update check failed: ${resp.statusCode} ${resp.body}');
         return null;
       }
 
       final json = jsonDecode(resp.body) as Map<String, dynamic>;
       final info = UpdateInfo.fromJson(json);
-      dev.log('[$_tag] Remote version: ${info.version} (code=${info.versionCode})', level: 500);
+      debugPrint('[$_tag] Remote version: ${info.version} (code=${info.versionCode})');
 
       final packageInfo = await PackageInfo.fromPlatform();
       final currentCode = int.tryParse(packageInfo.buildNumber) ?? 0;
-      dev.log('[$_tag] Current version: ${packageInfo.version} (code=$currentCode)', level: 500);
+      debugPrint('[$_tag] Current version: ${packageInfo.version} (code=$currentCode)');
 
       if (info.versionCode <= currentCode) {
-        dev.log('[$_tag] No update needed (remote=${info.versionCode} <= current=$currentCode)', level: 500);
+        debugPrint('[$_tag] No update needed (remote=${info.versionCode} <= current=$currentCode)');
         return null;
       }
 
       if (await isVersionDismissed(info.versionCode)) {
-        dev.log('[$_tag] Version ${info.versionCode} was dismissed by user', level: 500);
+        debugPrint('[$_tag] Version ${info.versionCode} was dismissed by user');
         return null;
       }
 
-      dev.log('[$_tag] Update available: ${info.version} (code=${info.versionCode})', level: 500);
+      debugPrint('[$_tag] Update available: ${info.version} (code=${info.versionCode})');
       return info;
     } catch (e) {
-      dev.log('[$_tag] Update check error: $e', level: 900);
+      debugPrint('[$_tag] Update check error: $e');
       return null;
     } finally {
       client.close();
@@ -106,7 +110,7 @@ class UpdateService {
     if (host == null) return null;
 
     final downloadUrl = 'https://$host:8443${info.downloadUrl}';
-    dev.log('[$_tag] Downloading APK from $downloadUrl', level: 500);
+    debugPrint('[$_tag] Downloading APK from $downloadUrl');
 
     final ioClient = HttpClient()
       ..badCertificateCallback = (cert, host, port) => true;
@@ -116,12 +120,12 @@ class UpdateService {
       final response = await request.close();
 
       if (response.statusCode != 200) {
-        dev.log('[$_tag] Download failed: status=${response.statusCode}', level: 900);
+        debugPrint('[$_tag] Download failed: status=${response.statusCode}');
         return null;
       }
 
       final contentLength = response.contentLength;
-      dev.log('[$_tag] Download started, contentLength=$contentLength', level: 500);
+      debugPrint('[$_tag] Download started, contentLength=$contentLength');
 
       final dir = await getTemporaryDirectory();
       final file = File('${dir.path}/simplevpn_update.apk');
@@ -137,10 +141,10 @@ class UpdateService {
       }
       await sink.close();
 
-      dev.log('[$_tag] Download complete: ${file.path} ($received bytes)', level: 500);
+      debugPrint('[$_tag] Download complete: ${file.path} ($received bytes)');
       return file.path;
     } catch (e) {
-      dev.log('[$_tag] Download error: $e', level: 900);
+      debugPrint('[$_tag] Download error: $e');
       return null;
     } finally {
       ioClient.close();
@@ -148,20 +152,20 @@ class UpdateService {
   }
 
   Future<bool> installApk(String apkPath) async {
-    dev.log('[$_tag] Triggering APK install: $apkPath', level: 500);
+    debugPrint('[$_tag] Triggering APK install: $apkPath');
     try {
       const channel = MethodChannel('com.simplevpn/vpn');
       final result = await channel.invokeMethod('installApk', {'path': apkPath});
-      dev.log('[$_tag] installApk result: $result', level: 500);
+      debugPrint('[$_tag] installApk result: $result');
       return result == true;
     } catch (e) {
-      dev.log('[$_tag] installApk error: $e', level: 900);
+      debugPrint('[$_tag] installApk error: $e');
       return false;
     }
   }
 
   Future<void> dismissVersion(int versionCode) async {
-    dev.log('[$_tag] Dismissing version code=$versionCode', level: 500);
+    debugPrint('[$_tag] Dismissing version code=$versionCode');
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_dismissedVersionKey, versionCode);
   }
