@@ -10,6 +10,13 @@ abstract final class AppColors {
   static const white = Color(0xFFF5F3FF);
   static const dim = Color(0xFF5a4a7a);
   static const dim2 = Color(0xFF2a1f3a);
+  // Extra tokens used by the playful status-widget footers.
+  static const purple = Color(0xFFa259ff);
+  static const yellow = Color(0xFFfff200);
+  static const green = Color(0xFF7cff8e);
+  static const red = Color(0xFFff4f6d);
+  static const paper = Color(0xFFf3ecd8);
+  static const paperInk = Color(0xFF1a1410);
 }
 
 abstract final class AppFonts {

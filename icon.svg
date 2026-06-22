@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>RKNPNH</title>
+  <defs>
+    <radialGradient id="glow" cx="0.5" cy="0.55" r="0.55">
+      <stop offset="0" stop-color="#ff2bd6" stop-opacity="0.22"></stop>
+      <stop offset="1" stop-color="#ff2bd6" stop-opacity="0"></stop>
+    </radialGradient>
+    <pattern id="scan" width="1" height="6" patternUnits="userSpaceOnUse">
+      <rect width="1" height="1" fill="#ffffff" fill-opacity="0.035"></rect>
+    </pattern>
+  </defs>
+
+  
+  <rect width="1024" height="1024" fill="#120a1f"></rect>
+  <rect width="1024" height="1024" fill="url(#glow)"></rect>
+  <rect width="1024" height="1024" fill="url(#scan)"></rect>
+
+  
+  <g stroke="#00f0ff" stroke-width="4" stroke-opacity="0.5" fill="none">
+    <path d="M70 70 h44 M92 48 v44"></path>
+    <path d="M910 932 h44 M932 910 v44"></path>
+  </g>
+
+  
+  <g transform="translate(512 512) rotate(-7) translate(-400 -195)">
+    
+    <rect width="800" height="390" rx="28" fill="none" stroke="#ff2bd6" stroke-width="22"></rect>
+    
+    <rect x="22" y="22" width="756" height="346" rx="14" fill="none" stroke="#ff2bd6" stroke-width="5" stroke-opacity="0.55"></rect>
+    
+    <g fill="#ff2bd6">
+      <circle cx="30" cy="30" r="6"></circle>
+      <circle cx="770" cy="30" r="6"></circle>
+      <circle cx="30" cy="360" r="6"></circle>
+      <circle cx="770" cy="360" r="6"></circle>
+    </g>
+    
+    <text x="400" y="218" text-anchor="middle" font-family="Archivo Black, Impact, Helvetica, Arial, sans-serif" font-size="142" font-weight="900" fill="#ff2bd6" letter-spacing="6">RKNPNH</text>
+    
+    <text x="400" y="310" text-anchor="middle" font-family="Space Grotesk, Helvetica, Arial, sans-serif" font-size="38" font-weight="700" fill="#ff2bd6" letter-spacing="14">★ NOT APPROVED ★</text>
+  </g>
+</svg>

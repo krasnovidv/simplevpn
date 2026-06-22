@@ -13,6 +13,7 @@ class ConfigStorage {
   static const _keySplitTunnelMode = 'split_tunneling_mode';
   static const _keySplitTunnelApps = 'split_tunneling_apps';
   static const _keySplitTunnelRoutes = 'split_tunneling_routes';
+  static const _keyFooterWidget = 'footer_widget';
 
   // Credentials stored encrypted (Android EncryptedSharedPreferences / iOS Keychain)
   final _secureStorage = const FlutterSecureStorage(
@@ -94,5 +95,17 @@ class ConfigStorage {
     await prefs.setString(_keySplitTunnelMode, json['mode'] as String);
     await prefs.setString(_keySplitTunnelApps, jsonEncode(json['apps']));
     await prefs.setString(_keySplitTunnelRoutes, jsonEncode(json['routes']));
+  }
+
+  // Status-widget footer preference. Stores the chosen footer id (or 'random');
+  // see widgets/footer_common.dart. Defaults to the shipped default ('tug').
+  Future<String> getFooterWidget() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyFooterWidget) ?? 'tug';
+  }
+
+  Future<void> setFooterWidget(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyFooterWidget, id);
   }
 }

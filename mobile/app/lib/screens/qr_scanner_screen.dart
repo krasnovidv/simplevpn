@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
-import '../models/vpn_config.dart';
+import '../utils/config_import.dart';
 
 class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
@@ -24,11 +24,16 @@ class _QrScannerScreenState extends State<QrScannerScreen> {
 
           _scanned = true;
           try {
-            final config = VpnConfig.fromJson(barcode!.rawValue!);
+            final config = parseImportedConfig(barcode!.rawValue!);
             Navigator.of(context).pop(config);
-          } catch (e) {
+          } on ConfigImportException catch (e) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Неверный QR: $e')),
+              SnackBar(content: Text('Неверный QR: ${e.message}')),
+            );
+            _scanned = false;
+          } catch (_) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Не удалось прочитать QR')),
             );
             _scanned = false;
           }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/vpn_service.dart';
@@ -11,11 +12,13 @@ import '../models/vpn_config.dart';
 import '../models/update_info.dart';
 
 import '../utils/validators.dart';
+import '../utils/vpn_error.dart';
 import '../theme/app_theme.dart';
 import '../widgets/stamp_widget.dart';
 import '../widgets/connect_animation.dart';
 import '../widgets/header_widget.dart';
-import '../widgets/footer_map.dart';
+import '../widgets/footer_common.dart';
+import '../widgets/footer_render.dart';
 import '../widgets/status_copy.dart';
 import '../widgets/pulse_rings.dart';
 import '../widgets/kill_switch_badge.dart';
@@ -43,6 +46,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _killSwitch = false;
   bool _adminConfigured = false;
   StreamSubscription<VpnConfig>? _deepLinkSub;
+  StreamSubscription<String>? _deepLinkErrorSub;
   UpdateInfo? _updateInfo;
   Timer? _updateTimer;
 
@@ -58,9 +62,37 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   int _connectedSecondsForAnim = 0;
 
+  // Status-widget footer preference. _footerPref is the stored choice (may be
+  // FooterKind.random); _rolledFooter is the concrete footer random resolves to
+  // for this launch, re-rolled on each idle→connecting transition.
+  FooterKind _footerPref = footerDefault;
+  FooterKind _rolledFooter = footerRandomPool.first;
+
+  FooterConnState get _footerState {
+    if (_visualDisconnecting) return FooterConnState.disconnecting;
+    return switch (_status) {
+      VpnStatusConnected() => FooterConnState.connected,
+      VpnStatusConnecting() || VpnStatusReconnecting() =>
+        FooterConnState.connecting,
+      _ => FooterConnState.idle,
+    };
+  }
+
+  FooterKind get _resolvedFooter =>
+      _footerPref == FooterKind.random ? _rolledFooter : _footerPref;
+
+  FooterKind _rollFooter() =>
+      footerRandomPool[Random().nextInt(footerRandomPool.length)];
+
+  Future<void> _loadFooterPref() async {
+    final id = await _storage.getFooterWidget();
+    if (mounted) setState(() => _footerPref = footerKindFromId(id));
+  }
+
   @override
   void initState() {
     super.initState();
+    _rolledFooter = _rollFooter();
 
     _stampPulseController = AnimationController(
       vsync: this,
@@ -84,7 +116,36 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _initDeepLinks();
     _checkForUpdate();
     _updateTimer = Timer.periodic(const Duration(minutes: 30), (_) => _checkForUpdate());
+    _loadFooterPref();
+    _checkWhatsNew();
     _log.info('App started');
+  }
+
+  Future<void> _checkWhatsNew() async {
+    final applied = await _updateService.consumeAppliedUpdate();
+    if (applied == null || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A1A2E),
+        title: Text(
+          'Что нового · v${applied.version}',
+          style: const TextStyle(fontFamily: AppFonts.display, color: AppColors.cyan),
+        ),
+        content: SingleChildScrollView(
+          child: Text(
+            applied.changelog,
+            style: const TextStyle(fontFamily: AppFonts.body, color: AppColors.white),
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Понятно'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _onStatusChanged(VpnStatus status) {
@@ -96,6 +157,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     });
 
     if (status is VpnStatusConnecting && prevStatus is! VpnStatusConnecting) {
+      // Re-roll the random footer at the start of each connection.
+      if (_footerPref == FooterKind.random) _rolledFooter = _rollFooter();
       _connectAnimPlaying = true;
       _connectAnimController.forward(from: 0).then((_) {
         if (!mounted) return;
@@ -170,6 +233,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _deepLinkSub = _deepLinkService.configStream.listen((config) {
       if (mounted) _showDeepLinkConfirmation(config);
     });
+    _deepLinkErrorSub = _deepLinkService.errorStream.listen((message) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось импортировать: $message')),
+        );
+      }
+    });
     _deepLinkService.startListening();
   }
 
@@ -240,9 +310,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return switch (_status) {
       VpnStatusDisconnected() => "// СТАТУС: НА ВИДУ",
       VpnStatusConnecting() => "// ИЩЕМ МАРШРУТ…",
-      VpnStatusReconnecting() => "// ПЕРЕПОДКЛЮЧЕНИЕ…",
+      VpnStatusReconnecting(:final attempt, :final max) =>
+        max > 0 ? "// ПЕРЕПОДКЛЮЧЕНИЕ $attempt/$max" : "// ПЕРЕПОДКЛЮЧЕНИЕ…",
       VpnStatusConnected() => "// СТАТУС: СКРЫТ",
-      VpnStatusError() => "// СТАТУС: ОШИБКА",
+      VpnStatusError(:final errorKind, :final message) =>
+        "// ${friendlyVpnError(errorKind, message)}",
     };
   }
 
@@ -347,6 +419,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             }).then((path) {
               if (path != null) {
                 Navigator.pop(ctx);
+                _updateService.markPendingInstall(info);
                 _updateService.installApk(path);
               } else {
                 setDialogState(() {
@@ -519,15 +592,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
         ),
-        FooterMap(
-          state: _visualDisconnecting
-              ? FooterMapState.disconnecting
-              : switch (_status) {
-                  VpnStatusConnected() => FooterMapState.connected,
-                  VpnStatusConnecting() || VpnStatusReconnecting() =>
-                    FooterMapState.connecting,
-                  _ => FooterMapState.idle,
-                },
+        FooterRender(
+          kind: _resolvedFooter,
+          state: _footerState,
           secs: _uptime.inSeconds,
         ),
       ],
@@ -724,11 +791,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
     _loadConfig();
     _checkAdminConfigured();
+    _loadFooterPref();
   }
 
   @override
   void dispose() {
     _deepLinkSub?.cancel();
+    _deepLinkErrorSub?.cancel();
     _deepLinkService.dispose();
     _uptimeTimer?.cancel();
     _updateTimer?.cancel();

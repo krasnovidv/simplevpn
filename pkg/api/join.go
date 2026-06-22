@@ -42,6 +42,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   border:none;transition:background .2s;margin-bottom:12px}
 .btn-primary{background:#ff2bd6;color:#fff}
 .btn-primary:hover{background:#ff5ce0}
+.btn-ghost{background:transparent;color:#00f0ff;border:1px solid #00f0ff;
+  margin-top:8px}
+.btn-ghost:hover{background:rgba(0,240,255,.08)}
 .steps{margin-top:20px;text-align:left;background:#0a0612;border-radius:8px;
   padding:16px;font-size:13px;line-height:1.8;border:1px solid #2a1f3a}
 .steps ol{padding-left:20px;color:#94a3b8}
@@ -60,6 +63,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   <p class="sub">VPN / КОНФИГУРАЦИЯ</p>
 
   <div id="opening" class="status opening">Открываю приложение&hellip;</div>
+
+  <button id="open-app" class="btn btn-ghost">Уже установлено? Открыть в приложении</button>
 
   <div id="fallback">
     <div class="status fallback">Приложение не установлено</div>
@@ -81,12 +86,19 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
   var frag = window.location.hash.substring(1);
   if (!frag) {
     document.getElementById('opening').textContent = 'Нет конфигурации в ссылке';
+    document.getElementById('open-app').style.display = 'none';
     return;
   }
 
-  // Try opening the app via deep link
   var deepLink = 'simplevpn://connect/' + frag;
-  window.location = deepLink;
+  function openApp(){ window.location = deepLink; }
+
+  // Explicit, always-visible escape hatch: open the app right away without
+  // waiting for the fallback timeout.
+  document.getElementById('open-app').addEventListener('click', openApp);
+
+  // Auto-attempt opening the app via the deep link on load.
+  openApp();
 
   // After 2s, show fallback
   setTimeout(function(){

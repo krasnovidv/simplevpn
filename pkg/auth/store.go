@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
+
+	"simplevpn/pkg/logx"
 )
 
 const bcryptCost = 12
@@ -63,21 +65,21 @@ func (s *FileStore) Authenticate(username, password string) bool {
 
 	u, ok := s.users[username]
 	if !ok {
-		log.Printf("[auth] authentication failed: user %q not found", username)
+		logx.Debugf("[auth] authentication failed: user %q not found", username)
 		return false
 	}
 
 	if u.Disabled {
-		log.Printf("[auth] authentication failed: user %q is disabled", username)
+		logx.Debugf("[auth] authentication failed: user %q is disabled", username)
 		return false
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
-		log.Printf("[auth] authentication failed: invalid password for user %q", username)
+		logx.Debugf("[auth] authentication failed: invalid password for user %q", username)
 		return false
 	}
 
-	log.Printf("[auth] user %q authenticated successfully", username)
+	logx.Debugf("[auth] user %q authenticated successfully", username)
 	return true
 }
 

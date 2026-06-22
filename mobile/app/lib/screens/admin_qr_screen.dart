@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import '../models/vpn_config.dart';
 import '../services/config_storage.dart';
+import '../utils/config_import.dart';
 
 class AdminQrScreen extends StatefulWidget {
   const AdminQrScreen({super.key});
@@ -77,6 +78,17 @@ class _AdminQrScreenState extends State<AdminQrScreen> {
     return jsonEncode(map);
   }
 
+  // The QR encodes the universal join link (not raw JSON): scannable by any
+  // camera, decodable offline by the in-app scanner, and it doesn't leak the
+  // password as plaintext the way a raw-JSON QR does.
+  String? get _joinLink {
+    final json = _qrData;
+    if (json == null) return null;
+    final host = _serverCtrl.text.trim().split(':').first;
+    if (host.isEmpty) return null;
+    return buildJoinLink(json, host);
+  }
+
   Future<void> _copyToClipboard() async {
     final data = _qrData;
     if (data == null) return;
@@ -91,6 +103,7 @@ class _AdminQrScreenState extends State<AdminQrScreen> {
   @override
   Widget build(BuildContext context) {
     final qrData = _qrData;
+    final joinLink = _joinLink;
 
     return Scaffold(
       appBar: AppBar(
@@ -208,12 +221,12 @@ class _AdminQrScreenState extends State<AdminQrScreen> {
           const SizedBox(height: 24),
 
           // Live QR preview
-          if (qrData != null) ...[
+          if (qrData != null && joinLink != null) ...[
             Center(
               child: Column(
                 children: [
                   QrImageView(
-                    data: qrData,
+                    data: joinLink,
                     version: QrVersions.auto,
                     size: 240,
                     backgroundColor: Colors.white,

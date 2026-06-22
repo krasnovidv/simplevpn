@@ -3,8 +3,7 @@ import 'dart:math';
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
-
-enum FooterMapState { idle, connecting, connected, disconnecting }
+import 'footer_common.dart';
 
 class _Hop {
   final String code;
@@ -14,7 +13,7 @@ class _Hop {
 }
 
 class FooterMap extends StatefulWidget {
-  final FooterMapState state;
+  final FooterConnState state;
   final int secs;
 
   const FooterMap({super.key, required this.state, required this.secs});
@@ -69,18 +68,18 @@ class _FooterMapState extends State<FooterMap>
     _pulseTimer?.cancel();
     _pulseTimer = null;
     final st = widget.state;
-    if (st == FooterMapState.idle || st == FooterMapState.disconnecting) return;
-    final ms = st == FooterMapState.connecting ? 220 : 700;
+    if (st == FooterConnState.idle || st == FooterConnState.disconnecting) return;
+    final ms = st == FooterConnState.connecting ? 220 : 700;
     _pulseTimer = Timer.periodic(Duration(milliseconds: ms), (_) {
       if (mounted) setState(() => _pulse++);
     });
   }
 
   int _activeHop() => switch (widget.state) {
-        FooterMapState.idle || FooterMapState.disconnecting => 0,
-        FooterMapState.connecting =>
+        FooterConnState.idle || FooterConnState.disconnecting => 0,
+        FooterConnState.connecting =>
           min(_hops.length - 1, _pulse % (_hops.length + 1)),
-        FooterMapState.connected => _pulse % _hops.length,
+        FooterConnState.connected => _pulse % _hops.length,
       };
 
   @override
@@ -93,7 +92,7 @@ class _FooterMapState extends State<FooterMap>
   @override
   Widget build(BuildContext context) {
     final ah = _activeHop();
-    final isConn = widget.state == FooterMapState.connected;
+    final isConn = widget.state == FooterConnState.connected;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 0, 20, 36),
@@ -134,9 +133,9 @@ class _FooterMapState extends State<FooterMap>
 
   Widget _headerRow(bool isConn) {
     final label = switch (widget.state) {
-      FooterMapState.idle || FooterMapState.disconnecting => '// ROUTE/DIRECT',
-      FooterMapState.connecting => '// ROUTE/BUILDING…',
-      FooterMapState.connected => '// ROUTE/OBFUSCATED',
+      FooterConnState.idle || FooterConnState.disconnecting => '// ROUTE/DIRECT',
+      FooterConnState.connecting => '// ROUTE/BUILDING…',
+      FooterConnState.connected => '// ROUTE/OBFUSCATED',
     };
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -173,7 +172,7 @@ class _FooterMapState extends State<FooterMap>
 
     // Stipple background — cyan when connected, dim otherwise
     final stippleColor =
-        st == FooterMapState.connected ? AppColors.cyan : AppColors.dim;
+        st == FooterConnState.connected ? AppColors.cyan : AppColors.dim;
     for (var y = 0; y < _h; y++) {
       for (var x = 0; x < _w; x++) {
         if ((x * 7 + y * 13) % 11 == 0) {
@@ -194,11 +193,11 @@ class _FooterMapState extends State<FooterMap>
     }
 
     // Trail between hops
-    if (st != FooterMapState.idle && st != FooterMapState.disconnecting) {
+    if (st != FooterConnState.idle && st != FooterConnState.disconnecting) {
       final trailColor =
-          st == FooterMapState.connected ? AppColors.cyan : AppColors.dim;
+          st == FooterConnState.connected ? AppColors.cyan : AppColors.dim;
       for (var i = 0; i < _hops.length - 1; i++) {
-        if (st == FooterMapState.connecting && i >= ah) break;
+        if (st == FooterConnState.connecting && i >= ah) break;
         final a = _hops[i], b = _hops[i + 1];
         final steps = (b.x - a.x).abs();
         for (var s = 1; s < steps; s++) {
@@ -216,9 +215,9 @@ class _FooterMapState extends State<FooterMap>
     for (var i = 0; i < _hops.length; i++) {
       final h = _hops[i];
       if (h.y >= _h || h.x >= _w) continue;
-      final isActive = st == FooterMapState.connected && i == ah;
+      final isActive = st == FooterConnState.connected && i == ah;
       final reached =
-          (st == FooterMapState.idle || st == FooterMapState.disconnecting)
+          (st == FooterConnState.idle || st == FooterConnState.disconnecting)
               ? i == 0
               : i <= ah;
 
@@ -229,7 +228,7 @@ class _FooterMapState extends State<FooterMap>
       } else if (h.exit) {
         chars[h.y][h.x] = '◆';
         colors[h.y][h.x] =
-            st == FooterMapState.connected ? AppColors.cyan : AppColors.dim;
+            st == FooterConnState.connected ? AppColors.cyan : AppColors.dim;
         weights[h.y][h.x] = FontWeight.w700;
       } else if (isActive) {
         chars[h.y][h.x] = '●';
@@ -292,11 +291,11 @@ class _FooterMapState extends State<FooterMap>
           color = AppColors.magenta;
           weight = FontWeight.w700;
         } else if (h.exit) {
-          color = st == FooterMapState.connected ? AppColors.cyan : AppColors.dim;
+          color = st == FooterConnState.connected ? AppColors.cyan : AppColors.dim;
           weight = FontWeight.w700;
-        } else if (st == FooterMapState.connected) {
+        } else if (st == FooterConnState.connected) {
           color = AppColors.cyan;
-        } else if (st == FooterMapState.connecting && i <= ah) {
+        } else if (st == FooterConnState.connecting && i <= ah) {
           color = AppColors.cyanHi;
         } else {
           color = AppColors.dim;

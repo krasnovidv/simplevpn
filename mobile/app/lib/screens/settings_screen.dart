@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import '../services/config_storage.dart';
 import '../services/admin_api_service.dart';
 import '../models/vpn_config.dart';
+import '../theme/app_theme.dart';
 import '../utils/validators.dart';
+import '../widgets/footer_common.dart';
 import 'qr_scanner_screen.dart';
 import 'split_tunneling_screen.dart';
 
@@ -26,6 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _fingerprint = '';
   bool _autoReconnect = false;
   bool _killSwitch = false;
+  FooterKind _footerWidget = footerDefault;
   int _reconnectMaxAttempts = 5;
   int _reconnectMaxBackoff = 60;
   bool _loaded = false;
@@ -46,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final config = await _storage.loadConfig();
     _autoReconnect = await _storage.getAutoReconnect();
     _killSwitch = await _storage.getKillSwitch();
+    _footerWidget = footerKindFromId(await _storage.getFooterWidget());
     _reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
     _reconnectMaxBackoff = await _storage.getReconnectMaxBackoff();
     final adminSettings = await _adminApi.loadSettings();
@@ -284,6 +288,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(height: 40),
 
+          // Status widget (footer) section
+          Text('Виджет статуса', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          Text('что показывать под кнопкой',
+              style: Theme.of(context).textTheme.bodySmall),
+          const SizedBox(height: 12),
+          for (final o in footerOptions) _footerOptionRow(o),
+
+          const Divider(height: 40),
+
           // Admin API section
           Text('Admin API', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
@@ -336,6 +350,98 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
   }
+
+  Widget _footerOptionRow(FooterOption o) {
+    final active = _footerWidget == o.kind;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () async {
+          await _storage.setFooterWidget(footerKindToId(o.kind));
+          setState(() => _footerWidget = o.kind);
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+          decoration: BoxDecoration(
+            color: active
+                ? AppColors.magenta.withValues(alpha: 0.10)
+                : Colors.white.withValues(alpha: 0.03),
+            border: Border.all(color: active ? AppColors.magenta : AppColors.dim2),
+            borderRadius: BorderRadius.circular(14),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 22,
+                child: Center(
+                  child: o.dice
+                      ? const Text('🎲', style: TextStyle(fontSize: 16))
+                      : Container(
+                          width: 12,
+                          height: 12,
+                          decoration: BoxDecoration(
+                            color: active ? AppColors.magenta : Colors.transparent,
+                            borderRadius: BorderRadius.circular(3),
+                            border: Border.all(
+                                color: active ? AppColors.magenta : AppColors.dim,
+                                width: 1.5),
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          o.name,
+                          style: TextStyle(
+                            fontFamily: AppFonts.body,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color:
+                                active ? AppColors.white : const Color(0xFFb8a8d8),
+                          ),
+                        ),
+                        if (o.kind == FooterKind.random && active)
+                          Padding(
+                            padding: const EdgeInsets.only(left: 8),
+                            child: Text(
+                              '→ ${footerOptionName(_resolvedRandomPreview)}',
+                              style: const TextStyle(
+                                fontFamily: AppFonts.mono,
+                                fontSize: 9,
+                                color: AppColors.cyan,
+                                letterSpacing: 1,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    Text(o.desc,
+                        style: const TextStyle(
+                            fontFamily: AppFonts.body,
+                            fontSize: 11,
+                            color: AppColors.dim)),
+                  ],
+                ),
+              ),
+              if (active)
+                const Icon(Icons.check, size: 16, color: AppColors.magenta),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // The home screen decides the actual rolled footer at connect time; here we
+  // just show one pool member as a hint of what "random" can yield.
+  FooterKind get _resolvedRandomPreview => footerRandomPool.first;
 
   Future<void> _save() async {
     final config = VpnConfig(

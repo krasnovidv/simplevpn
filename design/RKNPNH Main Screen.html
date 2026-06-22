@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>RKNPNH — Main Screen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Archivo+Black&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; }
+  body { font-family: 'Space Grotesk', system-ui, sans-serif; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="ios-frame.jsx"></script>
+<script type="text/babel" src="main-screens.jsx"></script>
+<script type="text/babel">
+const { useState } = React;
+
+function Phone({ Variant }) {
+  return (
+    <IOSDevice width={390} height={844} dark={true}>
+      <div style={{ width: '100%', height: '100%', marginTop: -60 }}>
+        <Variant/>
+      </div>
+    </IOSDevice>
+  );
+}
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="intro" title="RKNPNH · Main Screen" subtitle="Three animated takes. Tap the stamp on each phone to play through the full connect flow.">
+        <DCArtboard id="brief" label="The brief" width={420} height={300}>
+          <div style={{ padding: 24, height: '100%', boxSizing: 'border-box', background: '#120a1f', color: '#f5f3ff', fontFamily: 'Space Grotesk' }}>
+            <div style={{ fontSize: 11, color: '#00f0ff', letterSpacing: 4, fontWeight: 700, marginBottom: 10 }}>// HOW TO USE</div>
+            <div style={{ fontSize: 15, lineHeight: 1.5, color: '#b8a8d8' }}>
+              Each variation is a real working prototype with the connect state machine wired up.
+              Tap the stamp to go <b style={{color:'#fff'}}>idle → connecting → connected</b>; tap again to disconnect.
+              The connecting phase is faked at ~2.2s; uptime ticks live.
+            </div>
+            <div style={{ marginTop: 14, fontSize: 11, color: '#5a4a7a', fontFamily: 'JetBrains Mono' }}>
+              Pick a favorite, tell me what to refine, and I'll prep a clean handoff for Claude Code.
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="variants" title="Variants" subtitle="Different centerpieces. Same brand. Same dark + magenta + cyan.">
+        <DCArtboard id="stamp" label="01 · Stamped (with HIDE button)" width={420} height={870} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+          <Phone Variant={VarStamp}/>
+        </DCArtboard>
+        <DCArtboard id="scanner" label="02 · Scanner" width={420} height={870} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+          <Phone Variant={VarScanner}/>
+        </DCArtboard>
+        <DCArtboard id="glitch" label="03 · Glitch" width={420} height={870} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+          <Phone Variant={VarGlitch}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="notes" title="Animation notes" subtitle="What's actually happening on each one.">
+        <DCArtboard id="n1" label="01 · Stamped — notes" width={360} height={360}>
+          <Note title="Stamped" lines={[
+            'Idle: stamp gently breathes (2.4s pulse) with magenta pulse-rings radiating out.',
+            'Connecting: stamp wobbles -10°/-4° while a cyan dashed ring spins behind it.',
+            'Connected: stamp slams in from 2.2× scale, settles, then resumes a slower pulse in cyan.',
+            'Best for: making the brand the hero. The icon literally is the button.',
+          ]}/>
+        </DCArtboard>
+        <DCArtboard id="n2" label="02 · Scanner — notes" width={360} height={360}>
+          <Note title="Scanner" lines={[
+            'Idle: concentric rings, dim dots, "STATUS: EXPOSED" copy.',
+            'Connecting: rings counter-rotate at different speeds, a sweep arm orbits, dots blink in sequence.',
+            'Connected: dots solidify cyan, copy flips to "YOU\u2019RE GHOST".',
+            'Best for: a control-panel / radar feel. More datavis than mascot.',
+          ]}/>
+        </DCArtboard>
+        <DCArtboard id="n3" label="03 · Glitch — notes" width={360} height={360}>
+          <Note title="Glitch" lines={[
+            'Idle: heavy chromatic aberration, scanlines drifting, terminal-style copy.',
+            'Connecting: full RGB-split jitter at 6Hz with a scanline sweeping the screen.',
+            'Connected: noise drops to 15%, RGB layers fade out, stamp turns clean magenta and pulses gently.',
+            'Best for: the cypherpunk crowd. Loudest of the three.',
+          ]}/>
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+function Note({ title, lines }) {
+  return (
+    <div style={{ padding: 22, height: '100%', boxSizing: 'border-box', background: '#120a1f', color: '#f5f3ff', fontFamily: 'Space Grotesk' }}>
+      <div style={{ fontFamily: 'Archivo Black', fontSize: 18, color: '#ff2bd6', marginBottom: 12, letterSpacing: 1 }}>{title.toUpperCase()}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {lines.map((l, i) => (
+          <div key={i} style={{ display: 'flex', gap: 10, fontSize: 12, lineHeight: 1.5, color: '#b8a8d8' }}>
+            <span style={{ color: '#00f0ff', fontFamily: 'JetBrains Mono', flexShrink: 0 }}>{String(i+1).padStart(2,'0')}</span>
+            <span>{l}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

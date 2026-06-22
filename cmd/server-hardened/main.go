@@ -37,8 +37,10 @@ import (
 
 	"simplevpn/pkg/api"
 	"simplevpn/pkg/auth"
+	"simplevpn/pkg/auththrottle"
 	"simplevpn/pkg/config"
 	"simplevpn/pkg/ippool"
+	"simplevpn/pkg/logx"
 	"simplevpn/pkg/tlsdecoy"
 	"simplevpn/pkg/transport"
 	"simplevpn/pkg/transport/ws"
@@ -49,7 +51,7 @@ import (
 type clientSession struct {
 	id       string
 	username string
-	conn     net.Conn     // closed by disconnect callback to terminate recv loop
+	conn     net.Conn // closed by disconnect callback to terminate recv loop
 	tun      *tunnel.Tunnel
 	bytesIn  atomic.Int64 // plaintext bytes received from client (client→TUN)
 	bytesOut atomic.Int64 // plaintext bytes sent to client (TUN→client)
@@ -57,6 +59,10 @@ type clientSession struct {
 
 // apiSrv is the management API server; nil when API is disabled.
 var apiSrv *api.Server
+
+// authGate throttles repeated failed VPN credential attempts per source IP to
+// blunt online password guessing and limit bcrypt CPU exhaustion.
+var authGate = auththrottle.New(auththrottle.DefaultMaxFailures, auththrottle.DefaultWindow)
 
 // newSessionID returns a 16-char hex random session ID (URL-safe, no colons).
 func newSessionID() string {
@@ -123,6 +129,10 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config validation: %v", err)
 	}
+
+	// Apply the configured log level so verbose/privacy-sensitive output
+	// (connection metadata, usernames, per-packet events) is gated.
+	logx.SetLevelString(cfg.LogLevel)
 
 	// -- Load user store --
 	store, err := auth.NewFileStore(cfg.UsersFile)
@@ -204,7 +214,7 @@ func main() {
 			sessions.Range(func(_, val interface{}) bool {
 				sess := val.(*clientSession)
 				if sess.id == clientID {
-					log.Printf("[server] DEBUG disconnect requested: id=%s user=%q", clientID, sess.username)
+					logx.Debugf("[server] disconnect requested: id=%s user=%q", clientID, sess.username)
 					sess.conn.Close()
 					found = true
 					return false
@@ -262,19 +272,19 @@ func tunToClientRelay(tun *tunnel.TunDevice, sessions *sync.Map) {
 
 		dst, err := dstFromIPv4(buf[:n])
 		if err != nil {
-			log.Printf("[relay] DEBUG drop packet: %v", err)
+			logx.Debugf("[relay] drop packet: %v", err)
 			continue
 		}
 
 		val, ok := sessions.Load(dst)
 		if !ok {
-			log.Printf("[relay] DEBUG drop packet: no session for dst=%s", dst)
+			logx.Debugf("[relay] drop packet: no session for dst=%s", dst)
 			continue
 		}
 
 		sess := val.(*clientSession)
 		if err := sess.tun.Send(buf[:n]); err != nil {
-			log.Printf("[relay] Send to %s (user=%q): %v", dst, sess.username, err)
+			logx.Debugf("[relay] Send to %s (user=%q): %v", dst, sess.username, err)
 		} else {
 			sess.bytesOut.Add(int64(n))
 		}
@@ -389,6 +399,17 @@ func serveAuth(
 	pool *ippool.Pool,
 	sessions *sync.Map,
 ) {
+	// Throttle brute-force attempts before doing any (expensive) work.
+	ip, _, splitErr := net.SplitHostPort(remoteAddr)
+	if splitErr != nil {
+		ip = remoteAddr
+	}
+	if !authGate.Allowed(ip) {
+		log.Printf("[server] Auth throttled for %s (too many failed attempts) -> decoy mode", remoteAddr)
+		serveDecoy(conn)
+		return
+	}
+
 	username, password, err := tlsdecoy.ReadCredAuth(conn)
 	if err != nil {
 		log.Printf("[server] Credential read failed from %s: %v -> decoy mode", remoteAddr, err)
@@ -397,22 +418,27 @@ func serveAuth(
 	}
 
 	if !store.Authenticate(username, password) {
-		log.Printf("[server] Auth FAILED for user %q from %s -> decoy mode", username, remoteAddr)
+		authGate.Fail(ip)
+		log.Printf("[server] Auth FAILED from %s -> decoy mode", remoteAddr)
 		serveDecoy(conn)
 		return
 	}
 
+	// Successful login clears the IP's failure count.
+	authGate.Reset(ip)
+
 	// Allocate a client IP from the pool.
 	assignedIP, err := pool.Allocate()
 	if err != nil {
-		log.Printf("[server] Pool exhausted, rejecting user=%q from %s: %v", username, remoteAddr, err)
+		log.Printf("[server] Pool exhausted, rejecting %s: %v", remoteAddr, err)
 		conn.Close()
 		return
 	}
 	assignedPrefix := netip.PrefixFrom(assignedIP, pool.Prefix().Bits())
 	defer pool.Release(assignedIP)
 
-	log.Printf("[server] VPN client authenticated: user=%q addr=%s assigned=%s", username, remoteAddr, assignedPrefix)
+	log.Printf("[server] VPN client authenticated: addr=%s assigned=%s", remoteAddr, assignedPrefix)
+	logx.Debugf("[server] authenticated user=%q addr=%s assigned=%s", username, remoteAddr, assignedPrefix)
 
 	// Respond with the assigned IP so the client can configure its TUN.
 	if _, err := fmt.Fprintf(conn, "OK %s\n", assignedPrefix.String()); err != nil {
@@ -445,7 +471,7 @@ func serveAuth(
 		defer apiSrv.UnregisterClient(sessionID)
 	}
 
-	log.Printf("[server] DEBUG session registered: id=%s ip=%s user=%q", sessionID, assignedIP, username)
+	logx.Debugf("[server] session registered: id=%s ip=%s user=%q", sessionID, assignedIP, username)
 
 	// Per-session stats ticker: update API every second.
 	if apiSrv != nil {
@@ -469,7 +495,8 @@ func serveAuth(
 	for {
 		plaintext, err := tun2.Recv()
 		if err != nil {
-			log.Printf("[server] Client %s (user=%q ip=%s) disconnected: %v", remoteAddr, username, assignedIP, err)
+			log.Printf("[server] Client %s (ip=%s) disconnected: %v", remoteAddr, assignedIP, err)
+			logx.Debugf("[server] client disconnected user=%q ip=%s: %v", username, assignedIP, err)
 			return
 		}
 

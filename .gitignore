@@ -33,6 +33,7 @@ mobile/app/ios/.symlinks/
 .claude/
 .ai-factory/
 .ai-factory.json
+.playwright-mcp/
 
 # IDE
 .idea/

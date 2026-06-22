@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:app_links/app_links.dart';
 import '../models/vpn_config.dart';
+import '../utils/config_import.dart';
 import 'event_log.dart';
 
 class DeepLinkService {
@@ -9,8 +10,13 @@ class DeepLinkService {
   final _appLinks = AppLinks();
   StreamSubscription<Uri>? _sub;
   final _controller = StreamController<VpnConfig>.broadcast();
+  final _errorController = StreamController<String>.broadcast();
 
   Stream<VpnConfig> get configStream => _controller.stream;
+
+  /// Human-readable import errors (bad/incomplete config in a deep link), so
+  /// the UI can show why an import silently did nothing before.
+  Stream<String> get errorStream => _errorController.stream;
 
   Future<VpnConfig?> getInitialConfig() async {
     try {
@@ -44,62 +50,31 @@ class DeepLinkService {
       return null;
     }
 
-    final path = uri.path;
-    if (path.isEmpty || path == '/') {
+    if (uri.path.isEmpty || uri.path == '/') {
       _log.error('Deep link missing payload');
+      _errorController.add('Ссылка не содержит конфигурации');
       return null;
     }
 
-    // Remove leading slash
-    final payload = path.startsWith('/') ? path.substring(1) : path;
     try {
-      final json = _base64UrlDecode(payload);
-      _log.debug('Deep link decoded: ${_maskJson(json)}');
-      return VpnConfig.fromJson(json);
+      final config = parseImportedConfig(uri.toString());
+      _log.debug('Deep link imported: server=${config.server}');
+      return config;
+    } on ConfigImportException catch (e) {
+      _log.error('Deep link import rejected: ${e.message}');
+      _errorController.add(e.message);
+      return null;
     } catch (e) {
       _log.error('Deep link decode error: $e');
+      _errorController.add('Не удалось импортировать конфигурацию из ссылки');
       return null;
-    }
-  }
-
-  String _base64UrlDecode(String input) {
-    // RFC 4648 base64url: replace -_ back to +/, add padding
-    var s = input.replaceAll('-', '+').replaceAll('_', '/');
-    switch (s.length % 4) {
-      case 2:
-        s += '==';
-        break;
-      case 3:
-        s += '=';
-        break;
-    }
-    return utf8.decode(base64.decode(s));
-  }
-
-  String _maskJson(String json) {
-    try {
-      var masked = json;
-      masked = masked.replaceAllMapped(
-        RegExp(r'"server_key"\s*:\s*"([^"]*)"'),
-        (m) {
-          final key = m.group(1) ?? '';
-          final shown = key.length > 4 ? '${key.substring(0, 4)}...' : key;
-          return '"server_key":"$shown"';
-        },
-      );
-      masked = masked.replaceAllMapped(
-        RegExp(r'"password"\s*:\s*"([^"]*)"'),
-        (m) => '"password":"***"',
-      );
-      return masked;
-    } catch (_) {
-      return '<unparseable>';
     }
   }
 
   void dispose() {
     _sub?.cancel();
     _controller.close();
+    _errorController.close();
   }
 }
 

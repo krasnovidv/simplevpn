@@ -61,8 +61,6 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
     );
   }
 
-  String? get _configJson => _userConfig?.toJson();
-
   String? get _shareLink {
     final config = _userConfig;
     if (config == null) return null;
@@ -155,7 +153,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
       );
     }
 
-    final hasConfig = _configJson != null;
+    final hasConfig = _shareLink != null;
 
     return Scaffold(
       appBar: AppBar(title: const Text('Поделиться доступом')),
@@ -218,7 +216,7 @@ class _ShareCredentialsScreenState extends State<ShareCredentialsScreen> {
               child: RepaintBoundary(
                 key: _qrKey,
                 child: QrImageView(
-                  data: _configJson!,
+                  data: _shareLink!,
                   version: QrVersions.auto,
                   size: 240,
                   backgroundColor: Colors.white,

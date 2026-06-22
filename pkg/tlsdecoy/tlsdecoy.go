@@ -35,10 +35,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"time"
+
+	"simplevpn/pkg/logx"
 )
 
 const (
@@ -76,7 +77,7 @@ func GenerateCredAuth(username, password string) ([]byte, error) {
 
 	copy(buf[offset:], password)
 
-	log.Printf("[tlsdecoy] generated credential frame for user %q (%d bytes)", username, size)
+	logx.Debugf("[tlsdecoy] generated credential frame for user %q (%d bytes)", username, size)
 	return buf, nil
 }
 
@@ -112,7 +113,7 @@ func ParseCredAuth(data []byte) (username, password string, err error) {
 
 	password = string(data[4+usernameLen : 4+usernameLen+passwordLen])
 
-	log.Printf("[tlsdecoy] parsed credential frame: user=%q", username)
+	logx.Debugf("[tlsdecoy] parsed credential frame: user=%q", username)
 	return username, password, nil
 }
 
@@ -164,7 +165,7 @@ func ReadCredAuth(conn net.Conn) (username, password string, err error) {
 
 	password = string(pwdBuf)
 
-	log.Printf("[tlsdecoy] read credential frame from %s: user=%q", conn.RemoteAddr(), username)
+	logx.Debugf("[tlsdecoy] read credential frame from %s: user=%q", conn.RemoteAddr(), username)
 	return username, password, nil
 }
 
