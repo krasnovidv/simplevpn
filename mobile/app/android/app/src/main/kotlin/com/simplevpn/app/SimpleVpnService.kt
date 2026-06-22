@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
+import android.net.IpPrefix
 import android.net.Network
 import android.net.VpnService
 import android.os.Build
@@ -13,6 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.net.InetAddress
+import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import vpnlib.Vpnlib
@@ -255,6 +258,21 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         return START_STICKY
     }
 
+    // Extracts the bare server host from the config JSON's "server":"host:port".
+    // Used to keep the server's IP out of the tunnel routes (see excludeRoute).
+    private fun parseServerHost(config: String): String? {
+        return try {
+            val server = JSONObject(config).optString("server", "")
+            if (server.isEmpty()) return null
+            val idx = server.lastIndexOf(':')
+            val host = if (idx > 0) server.substring(0, idx) else server
+            host.ifEmpty { null }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not parse server host from config: ${e.message}")
+            null
+        }
+    }
+
     private fun connect(config: String) {
         // [FIX] Prevent concurrent connect() calls using AtomicBoolean
         if (!isConnecting.compareAndSet(false, true)) {
@@ -332,6 +350,27 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                 builder.setMetered(false)
+                            }
+
+                            // Keep the VPN server's own IP OUT of the tunnel. Without this,
+                            // the 0.0.0.0/0 route swallows every app socket except the VPN's
+                            // own (which we protect()), so management/OTA traffic to the
+                            // server (e.g. the in-app update check on :8443) is routed into
+                            // the tunnel and never reaches it — OTA then only works while
+                            // disconnected. excludeRoute requires Android 13+ (API 33);
+                            // older devices keep the previous behaviour.
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                val serverHost = parseServerHost(config)
+                                if (serverHost != null) {
+                                    try {
+                                        val addr = InetAddress.getByName(serverHost)
+                                        val bits = if (addr.address.size == 4) 32 else 128
+                                        builder.excludeRoute(IpPrefix(addr, bits))
+                                        Log.i(TAG, "Excluded server $serverHost (${addr.hostAddress}/$bits) from tunnel routes")
+                                    } catch (e: Exception) {
+                                        Log.w(TAG, "Could not exclude server $serverHost from routes: ${e.message}")
+                                    }
+                                }
                             }
 
                             val ownPkg = applicationContext.packageName
