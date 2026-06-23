@@ -74,6 +74,32 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "disconnect" -> {
                 stopVpn(result)
             }
+            "cacheWidgetParams" -> {
+                // Proactively mirror the current config into the widget's prefs so
+                // the home-screen widget can connect without the app being open,
+                // even before the first in-app connect of this version.
+                val config = call.argument<String>("config") ?: ""
+                if (config.isEmpty()) {
+                    result.success(false)
+                } else {
+                    val act = activity
+                    if (act == null) {
+                        result.error("NO_ACTIVITY", "No activity available", null)
+                    } else {
+                        VpnWidgetProvider.saveConnectParams(
+                            act,
+                            config,
+                            call.argument<Boolean>("auto_reconnect") ?: false,
+                            call.argument<Boolean>("kill_switch") ?: false,
+                            call.argument<Int>("reconnect_max_attempts") ?: SimpleVpnService.DEFAULT_MAX_RETRIES,
+                            call.argument<Int>("reconnect_max_backoff_s") ?: SimpleVpnService.DEFAULT_MAX_BACKOFF_SECONDS,
+                            call.argument<String>("split_tunnel_mode") ?: "off",
+                            call.argument<List<String>>("split_tunnel_apps") ?: emptyList(),
+                        )
+                        result.success(true)
+                    }
+                }
+            }
             "status" -> {
                 // Prefer Go-side status (authoritative), fall back to Kotlin-side
                 val goStatus = try { Vpnlib.status() } catch (e: Exception) {

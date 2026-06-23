@@ -55,12 +55,20 @@
             android:label="@string/widget_label">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.simplevpn.app.WIDGET_TOGGLE" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/vpn_widget_info" />
         </receiver>
+
+        <activity
+            android:name=".WidgetToggleActivity"
+            android:exported="true"
+            android:theme="@style/WidgetToggleTheme"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:launchMode="standard" />
+
 
         <provider
             android:name="androidx.core.content.FileProvider"

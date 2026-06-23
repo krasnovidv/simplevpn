@@ -177,6 +177,33 @@ class VpnService with WidgetsBindingObserver {
     }
   }
 
+  /// Mirrors the current config + connect settings into the native widget cache
+  /// so the home-screen widget can (re)connect without opening the app. Safe to
+  /// call often; a no-op on platforms without the native handler.
+  Future<void> cacheWidgetParams(
+    String configJson, {
+    bool autoReconnect = false,
+    bool killSwitch = false,
+    int reconnectMaxAttempts = 5,
+    int reconnectMaxBackoffS = 60,
+    String splitTunnelMode = 'off',
+    List<String> splitTunnelApps = const [],
+  }) async {
+    try {
+      await _channel.invokeMethod('cacheWidgetParams', {
+        'config': configJson,
+        'auto_reconnect': autoReconnect,
+        'kill_switch': killSwitch,
+        'reconnect_max_attempts': reconnectMaxAttempts,
+        'reconnect_max_backoff_s': reconnectMaxBackoffS,
+        'split_tunnel_mode': splitTunnelMode,
+        'split_tunnel_apps': splitTunnelApps,
+      });
+    } catch (e) {
+      _log.debug('cacheWidgetParams failed (non-fatal): $e');
+    }
+  }
+
   String _maskConfig(String configJson) {
     try {
       var result = configJson;

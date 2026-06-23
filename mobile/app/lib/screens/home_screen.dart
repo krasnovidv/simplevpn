@@ -218,6 +218,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _killSwitch = killSwitch;
       _loading = false;
     });
+    if (config != null) {
+      // Keep the home-screen widget's connect cache in sync with the saved
+      // config + settings so it can toggle the VPN without opening the app.
+      final autoReconnect = await _storage.getAutoReconnect();
+      final reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
+      final reconnectMaxBackoffS = await _storage.getReconnectMaxBackoff();
+      final splitConfig = await _storage.getSplitTunnelConfig();
+      await _vpnService.cacheWidgetParams(
+        config.toJson(),
+        autoReconnect: autoReconnect,
+        killSwitch: killSwitch,
+        reconnectMaxAttempts: reconnectMaxAttempts,
+        reconnectMaxBackoffS: reconnectMaxBackoffS,
+        splitTunnelMode: splitConfig.mode.name,
+        splitTunnelApps: splitConfig.apps,
+      );
+    }
   }
 
   Future<void> _checkAdminConfigured() async {
