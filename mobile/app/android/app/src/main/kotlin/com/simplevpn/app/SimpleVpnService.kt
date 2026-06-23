@@ -199,6 +199,10 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         errorKind?.let { map["errorKind"] = it }
         errorMessage?.let { map["errorMessage"] = it }
         VpnPlugin.emitStatus(map)
+        // Keep the home-screen widget in sync with every status transition.
+        try { VpnWidgetProvider.refresh(applicationContext) } catch (e: Exception) {
+            Log.w(TAG, "widget refresh failed: ${e.message}")
+        }
     }
 
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -248,6 +252,13 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         Log.d(TAG, "Config received, length=${configJson!!.length}, autoReconnect=$autoReconnect, " +
                 "killSwitch=$killSwitch, maxRetries=$maxRetries, maxBackoffSeconds=$maxBackoffSeconds, " +
                 "splitMode=$splitTunnelMode, splitApps=${splitTunnelApps.size}")
+
+        // Mirror the connect params so the home-screen widget can reconnect later
+        // without the app being open (it can't read Flutter's secure storage).
+        VpnWidgetProvider.saveConnectParams(
+            this, configJson!!, autoReconnect, killSwitch,
+            maxRetries, maxBackoffSeconds, splitTunnelMode, splitTunnelApps,
+        )
 
         // User-initiated start — clear latches from previous session.
         retryStopped.set(false)

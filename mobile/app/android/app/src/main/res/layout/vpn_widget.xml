@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="@drawable/vpn_widget_bg"
+    android:padding="12dp">
+
+    <TextView
+        android:id="@+id/widget_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="RKNPNH"
+        android:textColor="#FF2BD6"
+        android:textStyle="bold"
+        android:textSize="16sp"
+        android:letterSpacing="0.15" />
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="ОТКЛЮЧЕНО"
+        android:textColor="#5A4A7A"
+        android:textStyle="bold"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/widget_action"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="НАЖМИ, ЧТОБЫ ПОДКЛЮЧИТЬ"
+        android:textColor="#5A4A7A"
+        android:textSize="10sp"
+        android:letterSpacing="0.05" />
+
+</LinearLayout>
