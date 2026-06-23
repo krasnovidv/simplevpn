@@ -125,30 +125,25 @@ class VpnWidgetProvider : AppWidgetProvider() {
         val state = currentState()
         val views = RemoteViews(context.packageName, R.layout.vpn_widget)
 
+        // Compact 1x1 labels.
         val statusText: String
-        val actionText: String
         val statusColor: Int
         when {
             state == "connected" -> {
-                statusText = "ПОДКЛЮЧЕНО"; actionText = "НАЖМИ, ЧТОБЫ ОТКЛЮЧИТЬ"
-                statusColor = 0xFF00F0FF.toInt()
+                statusText = "ВКЛ"; statusColor = 0xFF00F0FF.toInt()
             }
             state == "reconnecting" || state.startsWith("connecting") -> {
-                statusText = "ПОДКЛЮЧЕНИЕ…"; actionText = "ОЖИДАНИЕ"
-                statusColor = 0xFFFF2BD6.toInt()
+                statusText = "…"; statusColor = 0xFFFF2BD6.toInt()
             }
             state.startsWith("error") -> {
-                statusText = "ОШИБКА"; actionText = "НАЖМИ, ЧТОБЫ ПОВТОРИТЬ"
-                statusColor = 0xFFFF5555.toInt()
+                statusText = "ERR"; statusColor = 0xFFFF5555.toInt()
             }
             else -> {
-                statusText = "ОТКЛЮЧЕНО"; actionText = "НАЖМИ, ЧТОБЫ ПОДКЛЮЧИТЬ"
-                statusColor = 0xFF5A4A7A.toInt()
+                statusText = "ВЫКЛ"; statusColor = 0xFF5A4A7A.toInt()
             }
         }
         views.setTextViewText(R.id.widget_status, statusText)
         views.setTextColor(R.id.widget_status, statusColor)
-        views.setTextViewText(R.id.widget_action, actionText)
 
         // Route the tap to the transparent toggle Activity (foreground context →
         // can start the FGS and request VPN consent without restriction).
