@@ -200,7 +200,10 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         errorMessage?.let { map["errorMessage"] = it }
         VpnPlugin.emitStatus(map)
         // Keep the home-screen widget in sync with every status transition.
-        try { VpnWidgetProvider.refresh(applicationContext) } catch (e: Exception) {
+        // Pass the authoritative state we're emitting — at "connected" emit time
+        // Vpnlib.status() can still read "connecting" (the emit fires just before
+        // runTunnel), so re-reading it in the widget would miss the transition.
+        try { VpnWidgetProvider.refresh(applicationContext, state) } catch (e: Exception) {
             Log.w(TAG, "widget refresh failed: ${e.message}")
         }
     }

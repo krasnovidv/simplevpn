@@ -95,14 +95,24 @@ class VpnWidgetProvider : AppWidgetProvider() {
             }
         }
 
-        /** Redraw every widget instance. Call on each VPN status change. */
+        /**
+         * Redraw every widget instance. Call on each VPN status change.
+         *
+         * [stateOverride] is the authoritative state the service is emitting
+         * right now (e.g. "connected"). Pass it from the service: at emit time
+         * `Vpnlib.status()` can still lag a tick behind (the "connected" emit
+         * fires just before `runTunnel`), so re-reading it here would show a
+         * stale "connecting" and the widget would never catch up to "connected"
+         * until the next onUpdate. When null, falls back to [currentState].
+         */
         @JvmStatic
-        fun refresh(ctx: Context) {
+        @JvmOverloads
+        fun refresh(ctx: Context, stateOverride: String? = null) {
             val mgr = AppWidgetManager.getInstance(ctx) ?: return
             val ids = mgr.getAppWidgetIds(ComponentName(ctx, VpnWidgetProvider::class.java))
             if (ids.isEmpty()) return
             val provider = VpnWidgetProvider()
-            for (id in ids) provider.updateWidget(ctx, mgr, id)
+            for (id in ids) provider.updateWidget(ctx, mgr, id, stateOverride)
         }
 
         /** Go-side status is authoritative; fall back to the Kotlin mirror. */
@@ -121,8 +131,8 @@ class VpnWidgetProvider : AppWidgetProvider() {
         for (id in ids) updateWidget(context, mgr, id)
     }
 
-    private fun updateWidget(context: Context, mgr: AppWidgetManager, id: Int) {
-        val state = currentState()
+    private fun updateWidget(context: Context, mgr: AppWidgetManager, id: Int, stateOverride: String? = null) {
+        val state = stateOverride ?: currentState()
         val views = RemoteViews(context.packageName, R.layout.vpn_widget)
 
         // Compact 1x1 labels.
