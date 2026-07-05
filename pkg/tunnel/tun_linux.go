@@ -27,3 +27,28 @@ func openTun(name string) (*os.File, error) {
 
 	return f, nil
 }
+
+// Read reads one packet from the TUN device via a blocking raw syscall,
+// bypassing Go's netpoller (see TunDevice doc comment). EINTR is retried
+// because the Go runtime can interrupt blocking syscalls (e.g. SIGURG for
+// goroutine preemption).
+func (t *TunDevice) Read(b []byte) (int, error) {
+	for {
+		n, err := unix.Read(t.fd, b)
+		if err == unix.EINTR {
+			continue
+		}
+		return n, err
+	}
+}
+
+// Write writes one packet to the TUN device via a blocking raw syscall.
+func (t *TunDevice) Write(b []byte) (int, error) {
+	for {
+		n, err := unix.Write(t.fd, b)
+		if err == unix.EINTR {
+			continue
+		}
+		return n, err
+	}
+}

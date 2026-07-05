@@ -8,16 +8,17 @@ import (
 )
 
 // TunDevice represents a TUN network interface.
+//
+// Read/Write are defined per-platform (tun_linux.go / tun_other.go). On Linux
+// they use blocking raw syscalls on fd, deliberately bypassing Go's runtime
+// netpoller: a TUN character device is not reliably epoll-pollable, and going
+// through the poller makes the very first Read fail with "not pollable", which
+// silently kills the TUN→client relay. Raw blocking reads are immune to that.
 type TunDevice struct {
 	f    *os.File
+	fd   int
 	Name string
 }
-
-// Read reads a packet from the TUN device.
-func (t *TunDevice) Read(b []byte) (int, error) { return t.f.Read(b) }
-
-// Write writes a packet to the TUN device.
-func (t *TunDevice) Write(b []byte) (int, error) { return t.f.Write(b) }
 
 // Close closes the TUN device.
 func (t *TunDevice) Close() error {
@@ -47,8 +48,11 @@ func CreateTUN(name, cidr string, mtu int) (*TunDevice, error) {
 		return nil, fmt.Errorf("ip link up: %w", err)
 	}
 
+	// Fd() puts the descriptor into blocking mode and detaches it from the
+	// runtime netpoller, so the raw unix.Read/unix.Write in tun_linux.go operate
+	// on a plain blocking fd. Keep f alive in the struct so it is not finalized.
 	log.Printf("[tunnel] TUN device %s created and configured", name)
-	return &TunDevice{f: f, Name: name}, nil
+	return &TunDevice{f: f, fd: int(f.Fd()), Name: name}, nil
 }
 
 func runCmd(name string, args ...string) error {
