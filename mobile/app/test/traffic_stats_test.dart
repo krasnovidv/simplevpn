@@ -54,16 +54,16 @@ void main() {
 
   group('TrafficSample.fromDelta', () {
     test('computes correct KB/s for monotonic increase', () {
-      final prev = const TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 10240, bytesOut: 5120, sinceMs: 1000);
+      const prev = TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 10240, bytesOut: 5120, sinceMs: 1000);
       final sample = TrafficSample.fromDelta(prev, curr, const Duration(seconds: 1));
       expect(sample.kbpsIn, closeTo(10.0, 0.01));
       expect(sample.kbpsOut, closeTo(5.0, 0.01));
     });
 
     test('computes correct rate over 2 seconds', () {
-      final prev = const TrafficStats(bytesIn: 1000, bytesOut: 500, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 11240, bytesOut: 5620, sinceMs: 1000);
+      const prev = TrafficStats(bytesIn: 1000, bytesOut: 500, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 11240, bytesOut: 5620, sinceMs: 1000);
       final sample = TrafficSample.fromDelta(prev, curr, const Duration(seconds: 2));
       // deltaIn = 10240, over 2s = 5120 B/s = 5 KB/s
       expect(sample.kbpsIn, closeTo(5.0, 0.01));
@@ -72,32 +72,32 @@ void main() {
     });
 
     test('counter reset produces zero (no negative spike)', () {
-      final prev = const TrafficStats(bytesIn: 50000, bytesOut: 30000, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 100, bytesOut: 50, sinceMs: 2000);
+      const prev = TrafficStats(bytesIn: 50000, bytesOut: 30000, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 100, bytesOut: 50, sinceMs: 2000);
       final sample = TrafficSample.fromDelta(prev, curr, const Duration(seconds: 1));
       expect(sample.kbpsIn, 0.0);
       expect(sample.kbpsOut, 0.0);
     });
 
     test('zero elapsed produces zero rates', () {
-      final prev = const TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 1024, bytesOut: 512, sinceMs: 1000);
+      const prev = TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 1024, bytesOut: 512, sinceMs: 1000);
       final sample = TrafficSample.fromDelta(prev, curr, Duration.zero);
       expect(sample.kbpsIn, 0.0);
       expect(sample.kbpsOut, 0.0);
     });
 
     test('negative elapsed produces zero rates', () {
-      final prev = const TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 1024, bytesOut: 512, sinceMs: 1000);
+      const prev = TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 1024, bytesOut: 512, sinceMs: 1000);
       final sample = TrafficSample.fromDelta(prev, curr, const Duration(milliseconds: -500));
       expect(sample.kbpsIn, 0.0);
       expect(sample.kbpsOut, 0.0);
     });
 
     test('identical values produce zero rates', () {
-      final prev = const TrafficStats(bytesIn: 5000, bytesOut: 3000, sinceMs: 1000);
-      final curr = const TrafficStats(bytesIn: 5000, bytesOut: 3000, sinceMs: 1000);
+      const prev = TrafficStats(bytesIn: 5000, bytesOut: 3000, sinceMs: 1000);
+      const curr = TrafficStats(bytesIn: 5000, bytesOut: 3000, sinceMs: 1000);
       final sample = TrafficSample.fromDelta(prev, curr, const Duration(seconds: 1));
       expect(sample.kbpsIn, 0.0);
       expect(sample.kbpsOut, 0.0);

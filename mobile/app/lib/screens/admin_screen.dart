@@ -503,7 +503,7 @@ class _AdminScreenState extends State<AdminScreen>
       leading: const Icon(Icons.devices),
       title: Text(client.username),
       subtitle: Text(
-        '${client.assignedIp} · ${client.remoteAddr}\n${kb}КБ передано',
+        '${client.assignedIp} · ${client.remoteAddr}\n$kbКБ передано',
       ),
       isThreeLine: true,
       trailing: IconButton(

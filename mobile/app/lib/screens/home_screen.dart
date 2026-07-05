@@ -421,42 +421,42 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   void _startDownload(UpdateInfo info) {
-    double progress = 0;
-    bool downloading = true;
-    String? error;
+    // Progress and error are driven by ValueNotifiers so the download is
+    // kicked off exactly once (before the dialog builds), not re-triggered on
+    // every rebuild, and the dialog is popped via a captured navigator rather
+    // than a BuildContext held across the async gap.
+    final progress = ValueNotifier<double>(0);
+    final downloading = ValueNotifier<bool>(true);
+    final error = ValueNotifier<String?>(null);
+    final navigator = Navigator.of(context);
+
+    _updateService.downloadApk(info, (p) => progress.value = p).then((path) {
+      if (path != null) {
+        navigator.pop();
+        _updateService.markPendingInstall(info);
+        _updateService.installApk(path);
+      } else {
+        downloading.value = false;
+        error.value = 'Ошибка загрузки';
+      }
+    }).catchError((e) {
+      downloading.value = false;
+      error.value = 'Ошибка: $e';
+    });
 
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) {
-          if (downloading && progress == 0) {
-            _updateService.downloadApk(info, (p) {
-              setDialogState(() => progress = p);
-            }).then((path) {
-              if (path != null) {
-                Navigator.pop(ctx);
-                _updateService.markPendingInstall(info);
-                _updateService.installApk(path);
-              } else {
-                setDialogState(() {
-                  downloading = false;
-                  error = 'Ошибка загрузки';
-                });
-              }
-            }).catchError((e) {
-              setDialogState(() {
-                downloading = false;
-                error = 'Ошибка: $e';
-              });
-            });
-            progress = 0.01;
-          }
-
+      builder: (ctx) => AnimatedBuilder(
+        animation: Listenable.merge([progress, downloading, error]),
+        builder: (ctx, _) {
+          final isDownloading = downloading.value;
+          final err = error.value;
+          final p = progress.value;
           return AlertDialog(
             backgroundColor: const Color(0xFF1A1A2E),
             title: Text(
-              downloading ? 'Скачивание…' : 'Ошибка',
+              isDownloading ? 'Скачивание…' : 'Ошибка',
               style: const TextStyle(
                 fontFamily: AppFonts.display,
                 color: AppColors.cyan,
@@ -465,27 +465,27 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             content: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (downloading) ...[
+                if (isDownloading) ...[
                   LinearProgressIndicator(
-                    value: progress > 0.01 ? progress : null,
+                    value: p > 0 ? p : null,
                     backgroundColor: Colors.white12,
                     valueColor: const AlwaysStoppedAnimation(AppColors.cyan),
                   ),
                   const SizedBox(height: 12),
                   Text(
-                    '${(progress * 100).toInt()}%',
+                    '${(p * 100).toInt()}%',
                     style: const TextStyle(
                       fontFamily: AppFonts.mono,
                       color: Colors.white54,
                     ),
                   ),
                 ],
-                if (error != null)
-                  Text(error!, style: const TextStyle(color: Color(0xFFFF4444))),
+                if (err != null)
+                  Text(err, style: const TextStyle(color: Color(0xFFFF4444))),
               ],
             ),
             actions: [
-              if (!downloading) ...[
+              if (!isDownloading) ...[
                 TextButton(
                   onPressed: () => Navigator.pop(ctx),
                   child: const Text('Закрыть', style: TextStyle(color: Colors.white54)),
@@ -639,7 +639,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
 
     if (_config == null) {
-      return Opacity(
+      return const Opacity(
         opacity: 0.4,
         child: StampWidget(size: 220, color: AppColors.dim),
       );

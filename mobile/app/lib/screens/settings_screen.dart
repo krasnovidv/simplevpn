@@ -258,7 +258,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Макс. задержка'),
-              subtitle: Text('${_reconnectMaxBackoff}с между попытками'),
+              subtitle: Text('$_reconnectMaxBackoffс между попытками'),
               trailing: SizedBox(
                 width: 160,
                 child: Slider(

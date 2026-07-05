@@ -253,11 +253,11 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
               prefixIcon: const Icon(Icons.search, size: 22),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppColors.dim2),
+                borderSide: const BorderSide(color: AppColors.dim2),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppColors.dim2),
+                borderSide: const BorderSide(color: AppColors.dim2),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -279,10 +279,10 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
                 color: AppColors.dim2,
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Row(
+              child: const Row(
                 children: [
-                  const Icon(Icons.info_outline, color: AppColors.dim, size: 20),
-                  const SizedBox(width: 10),
+                  Icon(Icons.info_outline, color: AppColors.dim, size: 20),
+                  SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       'Включите режим для выбора приложений',
@@ -358,7 +358,7 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
                                 const SizedBox(height: 2),
                                 Text(
                                   pkg,
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                     fontSize: 12,
                                     fontFamily: AppFonts.mono,
                                     color: AppColors.dim,

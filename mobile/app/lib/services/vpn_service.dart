@@ -72,9 +72,23 @@ class VpnService with WidgetsBindingObserver {
   final List<TrafficSample> _samples = [];
   static const _maxSamples = 60;
   int _statsPollCount = 0;
-  final _statsController = StreamController<TrafficSnapshot>.broadcast();
+  bool _disposed = false;
+  late final StreamController<TrafficSnapshot> _statsController =
+      StreamController<TrafficSnapshot>.broadcast(
+    onListen: _onStatsListen,
+    onCancel: _stopStatsPolling,
+  );
 
   Stream<TrafficSnapshot> get trafficStream => _statsController.stream;
+
+  // Only poll traffic stats while something is actually listening to the
+  // stream. With no subscribers this avoids a method-channel round-trip + JSON
+  // parse every second for the entire duration of every connection.
+  void _onStatsListen() {
+    if (_status is VpnStatusConnected) {
+      _startStatsPolling();
+    }
+  }
   List<TrafficSample> get samples => List.unmodifiable(_samples);
 
   VpnStatus get status => _status;
@@ -322,6 +336,9 @@ class VpnService with WidgetsBindingObserver {
   }
 
   void _setStatus(VpnStatus status) {
+    // A late native onStatusChanged can arrive after dispose(); ignore it so we
+    // never touch the closed stats controller or notify freed listeners.
+    if (_disposed) return;
     final prev = _status;
     _status = status;
     for (final listener in _listeners) {
@@ -336,6 +353,8 @@ class VpnService with WidgetsBindingObserver {
   }
 
   void _startStatsPolling() {
+    // No subscribers → nothing consumes the samples, so don't burn a poll/sec.
+    if (!_statsController.hasListener) return;
     _stopStatsPolling();
     _lastStats = TrafficStats.zero;
     _lastStatsTime = DateTime.now();
@@ -387,6 +406,8 @@ class VpnService with WidgetsBindingObserver {
   }
 
   void dispose() {
+    _disposed = true;
+    _channel.setMethodCallHandler(null);
     _stopPolling();
     _stopStatsPolling();
     _statsController.close();

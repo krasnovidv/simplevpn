@@ -36,6 +36,10 @@ class _FooterTugWarState extends State<FooterTugWar>
   Duration _last = Duration.zero;
   final _rng = Random();
 
+  // Per-frame repaint signal for the canvas; header text is throttled to ~4 Hz.
+  final ValueNotifier<int> _frame = ValueNotifier<int>(0);
+  double _headerAccMs = 0;
+
   double _pos = 0.55; // -1 you win .. +1 watcher wins
   double _pull = 0.15;
   double _ground = 0; // MB reeled in
@@ -63,6 +67,7 @@ class _FooterTugWarState extends State<FooterTugWar>
   @override
   void dispose() {
     _ticker.dispose();
+    _frame.dispose();
     super.dispose();
   }
 
@@ -118,7 +123,12 @@ class _FooterTugWarState extends State<FooterTugWar>
                 ? 0.45
                 : 0.12;
 
-    if (mounted) setState(() {});
+    _frame.value++;
+    _headerAccMs += dt;
+    if (mounted && _headerAccMs >= 250) {
+      _headerAccMs = 0;
+      setState(() {});
+    }
   }
 
   @override
@@ -185,13 +195,7 @@ class _FooterTugWarState extends State<FooterTugWar>
                   aspectRatio: _w / _h,
                   child: RepaintBoundary(
                     child: CustomPaint(
-                      painter: _TugPainter(
-                        pos: _pos,
-                        pull: _pull,
-                        packets: _packets,
-                        defeated: defeated,
-                        youWin: youWin,
-                      ),
+                      painter: _TugPainter(this),
                     ),
                   ),
                 ),
@@ -327,19 +331,17 @@ class _FooterTugWarState extends State<FooterTugWar>
 }
 
 class _TugPainter extends CustomPainter {
-  final double pos;
-  final double pull;
-  final List<_Packet> packets;
-  final bool defeated;
-  final bool youWin;
+  final _FooterTugWarState s;
 
-  _TugPainter({
-    required this.pos,
-    required this.pull,
-    required this.packets,
-    required this.defeated,
-    required this.youWin,
-  });
+  // Reads live simulation state; repaint driven by the ValueNotifier so no
+  // widget rebuild is needed per frame.
+  _TugPainter(this.s) : super(repaint: s._frame);
+
+  double get pos => s._pos;
+  double get pull => s._pull;
+  List<_Packet> get packets => s._packets;
+  bool get defeated => s._pos <= -0.86;
+  bool get youWin => s._pos < 0;
 
   static const double _w = 320, _h = 132;
   static const double _fire = 160, _ropeY = 64, _floor = 104;
@@ -358,9 +360,9 @@ class _TugPainter extends CustomPainter {
         AppColors.dim2, 1);
 
     // firewall dashed vertical line
-    _dashedLine(canvas, Offset(_fire, 20), const Offset(_fire, _floor),
+    _dashedLine(canvas, const Offset(_fire, 20), const Offset(_fire, _floor),
         youWin ? AppColors.cyan : AppColors.dim, 1, 3, 4, 0.7);
-    _text(canvas, 'FIREWALL', Offset(_fire, 12),
+    _text(canvas, 'FIREWALL', const Offset(_fire, 12),
         youWin ? AppColors.cyan : AppColors.dim, 7,
         center: true, letterSpacing: 2);
 
@@ -455,7 +457,7 @@ class _TugPainter extends CustomPainter {
     canvas.rotate(themLean * pi / 180);
     canvas.translate(-tX, -_floor);
 
-    final dim = AppColors.dim;
+    const dim = AppColors.dim;
     // legs
     _line(canvas, Offset(tX - 6, 84),
         Offset(defeated ? tX - 16 : tX - 7, _floor), dim, 5);
@@ -541,5 +543,5 @@ class _TugPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _TugPainter old) => true;
+  bool shouldRepaint(covariant _TugPainter old) => false;
 }

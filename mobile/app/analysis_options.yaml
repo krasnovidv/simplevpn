@@ -1,0 +1,20 @@
+# Activates the flutter_lints ruleset that ships in dev_dependencies but was
+# never included, so no Dart lints were being enforced. See
+# https://dart.dev/tools/analysis for how to customize.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # Treat unused imports/locals as warnings, not silent info.
+    unused_import: warning
+    unused_local_variable: warning
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "lib/l10n/**"
+
+linter:
+  rules:
+    prefer_const_constructors: true
+    prefer_const_declarations: true
+    avoid_print: true

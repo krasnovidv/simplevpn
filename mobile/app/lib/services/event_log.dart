@@ -13,6 +13,10 @@ class EventLog {
   factory EventLog() => _instance;
   EventLog._();
 
+  // Bound the in-memory log so long-lived connected sessions (native logs are
+  // appended on every status poll) can't grow it without limit.
+  static const _maxEntries = 500;
+
   final List<LogEntry> _entries = [];
   final _controller = StreamController<LogEntry>.broadcast();
 
@@ -22,6 +26,9 @@ class EventLog {
   void add(String level, String message) {
     final entry = LogEntry(time: DateTime.now(), level: level, message: message);
     _entries.add(entry);
+    if (_entries.length > _maxEntries) {
+      _entries.removeRange(0, _entries.length - _maxEntries);
+    }
     _controller.add(entry);
   }
 

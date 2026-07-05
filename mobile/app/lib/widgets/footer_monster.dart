@@ -40,6 +40,12 @@ class _FooterMonsterState extends State<FooterMonster>
   double _nowMs = 0;
   final _rng = Random();
 
+  // Repaint signal for the CustomPaint — bumped every tick so the (cheap,
+  // RepaintBoundary-isolated) canvas repaints without rebuilding the whole
+  // footer subtree. The header text is refreshed separately at ~4 Hz.
+  final ValueNotifier<int> _frame = ValueNotifier<int>(0);
+  double _lastHeaderMs = 0;
+
   final List<_MPacket> _packets = [];
   final List<_Burp> _burps = [];
   double _eaten = 0, _burped = 0, _belly = 0;
@@ -68,6 +74,7 @@ class _FooterMonsterState extends State<FooterMonster>
   @override
   void dispose() {
     _ticker.dispose();
+    _frame.dispose();
     super.dispose();
   }
 
@@ -123,7 +130,13 @@ class _FooterMonsterState extends State<FooterMonster>
 
     _burps.removeWhere((b) => _nowMs - b.born > 1100);
 
-    if (mounted) setState(() {});
+    // Repaint the canvas every frame (cheap, isolated by RepaintBoundary)...
+    _frame.value++;
+    // ...but only rebuild the widget subtree (header mood text) ~4x/sec.
+    if (mounted && _nowMs - _lastHeaderMs >= 250) {
+      _lastHeaderMs = _nowMs;
+      setState(() {});
+    }
   }
 
   @override
@@ -189,14 +202,7 @@ class _FooterMonsterState extends State<FooterMonster>
                   aspectRatio: _w / _h,
                   child: RepaintBoundary(
                     child: CustomPaint(
-                      painter: _MonsterPainter(
-                        packets: _packets,
-                        burps: _burps,
-                        belly: _belly,
-                        chomping: chomping,
-                        asleep: st == FooterConnState.idle,
-                        nowMs: _nowMs,
-                      ),
+                      painter: _MonsterPainter(this),
                     ),
                   ),
                 ),
@@ -276,21 +282,18 @@ class _FooterMonsterState extends State<FooterMonster>
 }
 
 class _MonsterPainter extends CustomPainter {
-  final List<_MPacket> packets;
-  final List<_Burp> burps;
-  final double belly;
-  final bool chomping;
-  final bool asleep;
-  final double nowMs;
+  final _FooterMonsterState s;
 
-  _MonsterPainter({
-    required this.packets,
-    required this.burps,
-    required this.belly,
-    required this.chomping,
-    required this.asleep,
-    required this.nowMs,
-  });
+  // Reads simulation state live from the State every frame; repaint is driven
+  // by the ValueNotifier, so no widget rebuild is needed to animate.
+  _MonsterPainter(this.s) : super(repaint: s._frame);
+
+  List<_MPacket> get packets => s._packets;
+  List<_Burp> get burps => s._burps;
+  double get belly => s._belly;
+  bool get chomping => s._nowMs - s._chompAt < 160;
+  bool get asleep => s.widget.state == FooterConnState.idle;
+  double get nowMs => s._nowMs;
 
   static const double _w = 320, _h = 120;
   static const Offset _mouth = Offset(74, 64);
@@ -478,5 +481,5 @@ class _MonsterPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _MonsterPainter old) => true;
+  bool shouldRepaint(covariant _MonsterPainter old) => false;
 }

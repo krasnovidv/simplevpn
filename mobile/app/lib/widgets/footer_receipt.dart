@@ -130,10 +130,10 @@ class _FooterReceiptState extends State<FooterReceipt>
           // printer slot
           Container(
             height: 6,
-            decoration: BoxDecoration(
+            decoration: const BoxDecoration(
               color: AppColors.bgDeep,
-              borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
-              border: const Border(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(6)),
+              border: Border(
                 top: BorderSide(color: AppColors.dim2),
                 left: BorderSide(color: AppColors.dim2),
                 right: BorderSide(color: AppColors.dim2),
@@ -145,11 +145,11 @@ class _FooterReceiptState extends State<FooterReceipt>
             child: Container(
               width: double.infinity,
               constraints: const BoxConstraints(minHeight: 80),
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.paper,
                 borderRadius:
-                    const BorderRadius.vertical(bottom: Radius.circular(4)),
-                boxShadow: const [
+                    BorderRadius.vertical(bottom: Radius.circular(4)),
+                boxShadow: [
                   BoxShadow(
                     color: Color(0x66000000),
                     blurRadius: 20,

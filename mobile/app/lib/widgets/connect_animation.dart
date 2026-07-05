@@ -123,10 +123,10 @@ class _ConnectAnimPainter extends CustomPainter {
         innerBorderPaint,
       );
       final corners = [
-        Offset(-stampW / 2 + 8, -stampH / 2 + 8),
-        Offset(stampW / 2 - 8, -stampH / 2 + 8),
-        Offset(-stampW / 2 + 8, stampH / 2 - 8),
-        Offset(stampW / 2 - 8, stampH / 2 - 8),
+        const Offset(-stampW / 2 + 8, -stampH / 2 + 8),
+        const Offset(stampW / 2 - 8, -stampH / 2 + 8),
+        const Offset(-stampW / 2 + 8, stampH / 2 - 8),
+        const Offset(stampW / 2 - 8, stampH / 2 - 8),
       ];
       for (final c in corners) {
         canvas.drawCircle(c, 1.8, dotPaint);
@@ -136,7 +136,7 @@ class _ConnectAnimPainter extends CustomPainter {
       _drawCenteredText(
         canvas,
         '★ NOT APPROVED ★',
-        Offset(0, 38),
+        const Offset(0, 38),
         TextStyle(
           fontFamily: AppFonts.body,
           fontSize: 8,

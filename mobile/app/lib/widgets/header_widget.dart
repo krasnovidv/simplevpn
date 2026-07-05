@@ -25,15 +25,15 @@ class HeaderWidget extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text.rich(
+              const Text.rich(
                 TextSpan(
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: AppFonts.display,
                     fontSize: 22,
                     color: AppColors.white,
                     letterSpacing: 1,
                   ),
-                  children: const [
+                  children: [
                     TextSpan(text: 'RKN'),
                     TextSpan(text: '·', style: TextStyle(color: AppColors.magenta)),
                     TextSpan(text: 'PNH'),
