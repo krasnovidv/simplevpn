@@ -315,7 +315,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
         try {
             // Start as foreground service (required for Android 8+)
-            startForeground(NOTIFICATION_ID, buildNotification("Connecting..."))
+            startForeground(NOTIFICATION_ID, buildNotification("Подключение…"))
             Log.d(TAG, "Foreground service started")
 
             // Set socket protector so Go can protect the VPN socket from TUN routing
@@ -414,6 +414,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
                     reconnectAttempt.set(0)
                     emitStructuredStatus("connected")
+                    updateNotification("Подключено")
                     Log.d(TAG, "Connection established — reset retry counter")
 
                     Log.d(TAG, "Calling Vpnlib.runTunnel(goFd=$goFd)")
@@ -435,11 +436,11 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                         if (!killSwitch) {
                             closeVpnInterfaceLocked()
                         }
-                        updateNotification("Reconnecting...")
+                        updateNotification("Переподключение…")
                     } else if (killSwitch) {
                         val fd = synchronized(vpnIfaceLock) { vpnInterface?.fd ?: -1 }
                         Log.i(TAG, "Kill switch active — keeping TUN fd=$fd to block all traffic (final failure)")
-                        updateNotification("VPN disconnected — traffic blocked (kill switch)")
+                        updateNotification("VPN отключён — трафик заблокирован (kill switch)")
                         currentStatus = "error: blocked (kill switch)"
                         emitStructuredStatus("error", errorKind = "fatal", errorMessage = "blocked (kill switch)")
                     } else {
@@ -447,7 +448,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
                         if (!currentStatus.startsWith("error:")) {
                             currentStatus = "disconnected"
                         }
-                        updateNotification("Disconnected")
+                        updateNotification("Отключено")
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         stopSelf()
                     }
@@ -457,7 +458,7 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
 
             // Status stays "connecting" until Go-side confirms via Vpnlib.status()
             Log.i(TAG, "VPN tunnel thread started, status remains 'connecting' until Go confirms")
-            updateNotification("Connecting...")
+            updateNotification("Подключение…")
             // (retry counter is reset on user-initiated start in onStartCommand and on
             // successful establish() inside the connect-thread; do not reset here or
             // retry-initiated reconnects would clobber the attempt count.)
@@ -619,15 +620,15 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         if (!decision.shouldRetry) {
             when (decision.reason) {
                 "auth-rejected" -> {
-                    updateNotification("VPN error: authentication rejected")
+                    updateNotification("Ошибка VPN: неверные учётные данные")
                     emitStructuredStatus("error", errorKind = "auth", errorMessage = "auth rejected")
                 }
                 "fatal" -> {
-                    updateNotification("VPN error: fatal")
+                    updateNotification("Ошибка VPN: критическая ошибка")
                     emitStructuredStatus("error", errorKind = "fatal")
                 }
                 "max-retries-exceeded" -> {
-                    updateNotification("VPN error: max retries exceeded")
+                    updateNotification("Ошибка VPN: превышено число попыток")
                     emitStructuredStatus("error", errorKind = "transient", errorMessage = "max retries exceeded")
                 }
                 else -> { /* clean-disconnect / autoreconnect-off / already-stopped: caller updates */ }
@@ -640,8 +641,8 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         emitStructuredStatus("reconnecting", attempt = decision.nextAttempt, max = maxRetries)
 
         updateNotification(
-            if (immediate) "Reconnecting (attempt ${decision.nextAttempt}/$maxRetries)..."
-            else "Reconnecting in ${decision.delayMs / 1000}s (attempt ${decision.nextAttempt}/$maxRetries)"
+            if (immediate) "Переподключение (попытка ${decision.nextAttempt}/$maxRetries)…"
+            else "Переподключение через ${decision.delayMs / 1000}с (попытка ${decision.nextAttempt}/$maxRetries)"
         )
         Log.i(TAG, "Scheduling retry ${decision.nextAttempt}/$maxRetries in ${decision.delayMs}ms (kind=$kind, immediate=$immediate)")
 

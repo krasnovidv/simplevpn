@@ -27,6 +27,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   String _transport = '';
   String _fingerprint = '';
   bool _autoReconnect = false;
+  bool _autoConnectOnLaunch = false;
   bool _killSwitch = false;
   FooterKind _footerWidget = footerDefault;
   int _reconnectMaxAttempts = 5;
@@ -48,6 +49,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _load() async {
     final config = await _storage.loadConfig();
     _autoReconnect = await _storage.getAutoReconnect();
+    _autoConnectOnLaunch = await _storage.getAutoConnectOnLaunch();
     _killSwitch = await _storage.getKillSwitch();
     _footerWidget = footerKindFromId(await _storage.getFooterWidget());
     _reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
@@ -220,6 +222,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
 
           SwitchListTile(
+            title: const Text('Автозапуск'),
+            subtitle:
+                const Text('Подключаться автоматически при запуске приложения'),
+            value: _autoConnectOnLaunch,
+            onChanged: (v) async {
+              await _storage.setAutoConnectOnLaunch(v);
+              setState(() => _autoConnectOnLaunch = v);
+            },
+          ),
+
+          SwitchListTile(
             title: const Text('Kill Switch'),
             subtitle:
                 const Text('Блокировать трафик при отключении VPN'),
@@ -258,7 +271,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ListTile(
               contentPadding: EdgeInsets.zero,
               title: const Text('Макс. задержка'),
-              subtitle: Text('$_reconnectMaxBackoffс между попытками'),
+              subtitle: Text('$_reconnectMaxBackoff с между попытками'),
               trailing: SizedBox(
                 width: 160,
                 child: Slider(

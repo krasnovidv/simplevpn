@@ -7,6 +7,7 @@ import '../models/split_tunnel_config.dart';
 class ConfigStorage {
   static const _keyConfig = 'vpn_config';
   static const _keyAutoReconnect = 'auto_reconnect';
+  static const _keyAutoConnectOnLaunch = 'auto_connect_on_launch';
   static const _keyKillSwitch = 'kill_switch';
   static const _keyReconnectMaxAttempts = 'reconnect_max_attempts';
   static const _keyReconnectMaxBackoff = 'reconnect_max_backoff_s';
@@ -38,6 +39,18 @@ class ConfigStorage {
   Future<void> setAutoReconnect(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyAutoReconnect, value);
+  }
+
+  /// When enabled, the app initiates a connection automatically on cold start
+  /// (if a config is saved and no tunnel is already up). Off by default.
+  Future<bool> getAutoConnectOnLaunch() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyAutoConnectOnLaunch) ?? false;
+  }
+
+  Future<void> setAutoConnectOnLaunch(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyAutoConnectOnLaunch, value);
   }
 
   Future<bool> getKillSwitch() async {

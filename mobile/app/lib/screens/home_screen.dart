@@ -112,7 +112,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _vpnService.addListener(_onStatusChanged);
     _loadConfig();
     _checkAdminConfigured();
-    _vpnService.checkInitialStatus();
+    _maybeAutoConnectOnLaunch();
     _initDeepLinks();
     _checkForUpdate();
     _updateTimer = Timer.periodic(const Duration(minutes: 30), (_) => _checkForUpdate());
@@ -146,6 +146,23 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ],
       ),
     );
+  }
+
+  /// On cold start, sync the UI to any already-running tunnel and — if the user
+  /// enabled "Автозапуск" — kick off a connection automatically when nothing is
+  /// connected yet and a config is saved. Replaces the bare checkInitialStatus()
+  /// call so both behaviours share one ordered async flow.
+  Future<void> _maybeAutoConnectOnLaunch() async {
+    await _vpnService.checkInitialStatus();
+    if (!mounted) return;
+    if (!await _storage.getAutoConnectOnLaunch()) return;
+    // A tunnel is already up (or negotiating) — don't start a second connect.
+    if (_vpnService.status is! VpnStatusDisconnected) return;
+    final config = await _storage.loadConfig();
+    if (config == null || !mounted) return;
+    if (_config == null) setState(() => _config = config);
+    _log.info('Auto-connect on launch enabled — starting connection');
+    _toggleConnection();
   }
 
   void _onStatusChanged(VpnStatus status) {
@@ -590,22 +607,26 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             ),
           ),
         Expanded(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (_canToggle) {
-                _toggleConnection();
-              } else if (_config == null) {
-                _openSettings();
-              }
-            },
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildCenterStage(),
-                const SizedBox(height: 24),
-                _buildStatusArea(),
-              ],
+          child: Semantics(
+            button: true,
+            label: _connectSemanticLabel(),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                if (_canToggle) {
+                  _toggleConnection();
+                } else if (_config == null) {
+                  _openSettings();
+                }
+              },
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  _buildCenterStage(),
+                  const SizedBox(height: 24),
+                  _buildStatusArea(),
+                ],
+              ),
             ),
           ),
         ),
@@ -689,7 +710,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
                 border: Border.all(color: Colors.orange.withValues(alpha: 0.5)),
               ),
               child: Text(
-                'Attempt $attempt / $max',
+                'Попытка $attempt / $max',
                 style: const TextStyle(
                   fontFamily: AppFonts.mono,
                   fontSize: 12,
@@ -748,6 +769,18 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ),
       ],
     );
+  }
+
+  /// Screen-reader label for the main tap target — describes the action the tap
+  /// will perform given the current state.
+  String _connectSemanticLabel() {
+    if (_config == null) return 'Открыть настройки VPN';
+    return switch (_status) {
+      VpnStatusConnected() => 'Отключить VPN',
+      VpnStatusConnecting() => 'Подключение к VPN',
+      VpnStatusReconnecting() => 'Переподключение к VPN',
+      _ => 'Подключить VPN',
+    };
   }
 
   bool get _canToggle =>
