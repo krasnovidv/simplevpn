@@ -1,4 +1,5 @@
-version: "3.8"
+# NOTE: the `version:` top-level key is obsolete in Compose v2 and has been
+# removed. Ports and mounts here are kept in sync with the Jenkins `docker run`.
 
 services:
   vpn-server:
@@ -12,12 +13,21 @@ services:
     ports:
       - "443:443"
       - "8443:8443"
+      # Public HTTP: join page + APK download + /healthz (was missing here,
+      # making those endpoints unreachable under compose deploys).
+      - "8080:8080"
     volumes:
       - ./config:/etc/simplevpn
       - ./certs:/etc/simplevpn/certs
       - certs:/etc/letsencrypt:ro
     sysctls:
       - net.ipv4.ip_forward=1
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks:
       - vpn
 
@@ -35,7 +45,12 @@ services:
     profiles:
       - setup
 
-  # Automatic certificate renewal (runs daily, renews if <30 days left)
+  # Manual certificate renewal: `docker compose --profile renew run --rm certbot-renew`.
+  # This is a one-shot, not a daemon — schedule it from host cron for real
+  # auto-renewal. After a successful renew the vpn-server container must be
+  # restarted to pick up the new cert (`docker compose restart vpn-server`);
+  # the previous `kill -HUP 1` only signalled this container's own PID 1 and
+  # never reached the server, so it was a silent no-op.
   certbot-renew:
     image: certbot/certbot:latest
     container_name: simplevpn-certbot-renew
@@ -43,7 +58,7 @@ services:
       - certs:/etc/letsencrypt
       - certbot-www:/var/www/certbot
     entrypoint: >
-      sh -c "certbot renew --quiet && kill -HUP 1 || true"
+      sh -c "certbot renew --quiet"
     depends_on:
       - vpn-server
     profiles:

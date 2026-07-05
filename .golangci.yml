@@ -1,0 +1,30 @@
+# golangci-lint configuration for SimpleVPN.
+# Run: golangci-lint run ./...   (or `make lint`)
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - unused
+    - gosec        # security-focused checks (relevant for a VPN)
+    - bodyclose    # unclosed HTTP response bodies
+    - misspell
+
+linters-settings:
+  gosec:
+    excludes:
+      # G402: the mobile update/admin channels intentionally allow InsecureSkipVerify
+      # (documented, gated by config); revisit with the Ed25519 signing migration.
+      - G402
+
+issues:
+  exclude-rules:
+    # Test files: allow weak RNG and unchecked errors in fixtures.
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck

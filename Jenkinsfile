@@ -11,6 +11,25 @@ pipeline {
     }
 
     stages {
+        // Quality gates run BEFORE anything is built or deployed, so broken
+        // code never reaches the production VPS. Previously the pipeline went
+        // straight from Build APK to deploy with no tests at all.
+        stage('Go Checks') {
+            steps {
+                bat 'go vet ./...'
+                bat 'go test ./...'
+            }
+        }
+
+        stage('Flutter Checks') {
+            steps {
+                dir('mobile/app') {
+                    bat 'D:\\flutter\\bin\\flutter.bat analyze'
+                    bat 'D:\\flutter\\bin\\flutter.bat test'
+                }
+            }
+        }
+
         stage('Build APK') {
             steps {
                 bat 'D:\\flutter\\bin\\flutter.bat build apk --release'
@@ -90,9 +109,14 @@ pipeline {
 
         stage('Health Check') {
             steps {
+                // Actually probe /healthz and fail the build if the server
+                // isn't serving — the old check just printed logs and always
+                // passed, so a crash-looping container looked like a success.
                 sh """
                     sshpass -p "\${VPS_CREDS_PSW}" ssh -o StrictHostKeyChecking=no \${VPS_USER}@\${VPS_HOST} \
-                        "sleep 3 && docker logs --tail 10 \${CONTAINER_NAME}"
+                        "sleep 5 && \
+                         curl -fsS http://127.0.0.1:8080/healthz && echo ' OK' || \
+                         (echo 'HEALTHCHECK FAILED'; docker logs --tail 30 \${CONTAINER_NAME}; exit 1)"
                 """
             }
         }
