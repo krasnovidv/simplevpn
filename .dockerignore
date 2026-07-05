@@ -23,3 +23,12 @@ roadmap.md
 *.pem
 *.key
 config.yaml
+
+# Runtime artifacts present in the VPS deploy dir (build context is /opt/simplevpn)
+*.apk
+*.tar.gz
+nohup.out
+simplevpn-server
+certs/
+config/
+rknpnh/
