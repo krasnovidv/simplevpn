@@ -1,0 +1,14 @@
+# Shell scripts and container entrypoints MUST use LF endings, otherwise the
+# CRLF shebang (#!/bin/sh\r) makes the container fail with
+# "exec entrypoint.sh: no such file or directory". Enforce LF regardless of
+# the checkout platform (this repo is developed on Windows).
+*.sh    text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+Makefile text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Go and Dart sources: normalize to LF in the repo.
+*.go    text eol=lf
+*.dart  text eol=lf
