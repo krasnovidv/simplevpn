@@ -42,6 +42,22 @@ func testServer() *Server {
 	return NewServer(cfg, "0.1.0-test", store)
 }
 
+func TestHealthzEndpointNoAuth(t *testing.T) {
+	s := testServer()
+
+	// /healthz must respond 200 with no Authorization header.
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("healthz status: got %d, want %d", w.Code, http.StatusOK)
+	}
+	if got := w.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("healthz content-type: got %q, want application/json", got)
+	}
+}
+
 func TestStatusEndpoint(t *testing.T) {
 	s := testServer()
 

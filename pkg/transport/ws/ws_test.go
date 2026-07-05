@@ -44,6 +44,18 @@ func TestWebSocketFrameRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReadFrameRejectsNegativeLength guards against a remote-DoS: a 127-length
+// frame whose 64-bit length has the high bit set decodes to a negative int64.
+// It must be rejected, not passed to make([]byte, n) where it would panic.
+func TestReadFrameRejectsNegativeLength(t *testing.T) {
+	// FIN+binary, len=127, then 0xFFFF... (negative when read as int64).
+	frame := []byte{finBit | opcodeBinary, 127, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}
+	_, _, err := readFrame(bytes.NewReader(frame))
+	if err == nil {
+		t.Fatal("readFrame accepted a negative-length frame; want error")
+	}
+}
+
 func TestWebSocketConnReadWrite(t *testing.T) {
 	serverRaw, clientRaw := net.Pipe()
 	defer serverRaw.Close()

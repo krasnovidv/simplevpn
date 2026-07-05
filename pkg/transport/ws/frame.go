@@ -134,8 +134,11 @@ func readFrame(r io.Reader) (opcode byte, data []byte, err error) {
 		return 0, nil, err
 	}
 
-	if h.payloadLen > 1<<20 { // 1MB sanity limit for VPN packets
-		return 0, nil, fmt.Errorf("frame too large: %d bytes", h.payloadLen)
+	// Reject negative (high bit set in a 64-bit length field) and oversized
+	// frames before allocating — a negative length would panic make([]byte, n)
+	// and a malicious client could otherwise crash the server with one frame.
+	if h.payloadLen < 0 || h.payloadLen > 1<<20 { // 1MB sanity limit for VPN packets
+		return 0, nil, fmt.Errorf("invalid frame length: %d bytes", h.payloadLen)
 	}
 
 	data = make([]byte, h.payloadLen)

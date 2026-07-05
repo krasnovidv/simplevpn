@@ -6,6 +6,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
@@ -88,9 +89,22 @@ type Server struct {
 	store        *auth.FileStore
 	disconnectFn func(clientID string) error
 	limiter      *rateLimiter
+	pubLimiter   *rateLimiter
 
 	mux        *http.ServeMux
 	httpServer *http.Server
+	pubServer  *http.Server
+}
+
+// securityHeaders wraps a handler with a baseline set of hardening headers.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // NewServer creates a new management API server.
@@ -100,25 +114,29 @@ func NewServer(cfg *config.ServerConfig, version string, store *auth.FileStore) 
 		startTime: time.Now(),
 		version:   version,
 		clients:   make(map[string]*ClientInfo),
-		store:     store,
-		limiter:   newRateLimiter(30, time.Minute),
+		store:      store,
+		limiter:    newRateLimiter(30, time.Minute),
+		pubLimiter: newRateLimiter(120, time.Minute),
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.handleHealthz)
 	mux.HandleFunc("/api/status", s.authMiddleware(s.handleStatus))
 	mux.HandleFunc("/api/clients", s.authMiddleware(s.handleClients))
 	mux.HandleFunc("/api/clients/", s.authMiddleware(s.handleClientAction))
 	mux.HandleFunc("/api/config", s.authMiddleware(s.handleConfig))
 	s.registerUserRoutes(mux)
-	mux.HandleFunc("/join", s.handleJoin)
-	mux.HandleFunc("/download/", s.handleDownload)
-	mux.HandleFunc("/api/update", s.handleUpdate)
+	mux.HandleFunc("/join", s.pubLimit(s.handleJoin))
+	mux.HandleFunc("/download/", s.pubLimit(s.handleDownload))
+	mux.HandleFunc("/api/update", s.pubLimit(s.handleUpdate))
 
 	s.mux = mux
 	s.httpServer = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Handler:           securityHeaders(mux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	log.Printf("[api] Management API server created, version=%s", version)
@@ -195,25 +213,61 @@ func (s *Server) ListenAndServeHTTP() error {
 	}
 
 	pubMux := http.NewServeMux()
-	pubMux.HandleFunc("/join", s.handleJoin)
-	pubMux.HandleFunc("/download/", s.handleDownload)
-	pubMux.HandleFunc("/api/update", s.handleUpdate)
+	pubMux.HandleFunc("/healthz", s.handleHealthz)
+	pubMux.HandleFunc("/join", s.pubLimit(s.handleJoin))
+	pubMux.HandleFunc("/download/", s.pubLimit(s.handleDownload))
+	pubMux.HandleFunc("/api/update", s.pubLimit(s.handleUpdate))
 
 	srv := &http.Server{
-		Addr:         addr,
-		Handler:      pubMux,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		Addr:              addr,
+		Handler:           securityHeaders(pubMux),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// WriteTimeout is intentionally generous: /download streams a multi-MB
+		// APK and a short deadline would truncate it on slow mobile links.
+		// Slowloris on the write side is bounded by IdleTimeout instead.
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  120 * time.Second,
 	}
+	s.pubServer = srv
 
 	log.Printf("[api] Public HTTP server listening on %s", addr)
 	return srv.ListenAndServe()
 }
 
-// Shutdown gracefully shuts down the API server.
-func (s *Server) Shutdown() error {
+// pubLimit rate-limits an unauthenticated public handler by client IP.
+func (s *Server) pubLimit(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if ip == "" {
+			ip = r.RemoteAddr
+		}
+		if !s.pubLimiter.allow(ip) {
+			http.Error(w, `{"error":"too many requests"}`, http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// handleHealthz is an unauthenticated liveness probe for load balancers and
+// container healthchecks.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+// Shutdown gracefully shuts down the API server, draining in-flight requests.
+func (s *Server) Shutdown(ctx context.Context) error {
 	log.Printf("[api] Shutting down management API")
-	return s.httpServer.Close()
+	err := s.httpServer.Shutdown(ctx)
+	if s.pubServer != nil {
+		if perr := s.pubServer.Shutdown(ctx); perr != nil && err == nil {
+			err = perr
+		}
+	}
+	return err
 }
 
 // authMiddleware checks the bearer token and applies rate limiting.

@@ -68,8 +68,8 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"username too long (max 255)"}`, http.StatusBadRequest)
 		return
 	}
-	if len(req.Password) < 8 || len(req.Password) > 1024 {
-		http.Error(w, `{"error":"password must be 8-1024 characters"}`, http.StatusBadRequest)
+	if len(req.Password) < 8 || len(req.Password) > 72 {
+		http.Error(w, `{"error":"password must be 8-72 bytes"}`, http.StatusBadRequest)
 		return
 	}
 
@@ -152,8 +152,8 @@ func (s *Server) handleUpdatePassword(w http.ResponseWriter, r *http.Request, us
 		http.Error(w, `{"error":"password is required"}`, http.StatusBadRequest)
 		return
 	}
-	if len(req.Password) < 8 || len(req.Password) > 1024 {
-		http.Error(w, `{"error":"password must be 8-1024 characters"}`, http.StatusBadRequest)
+	if len(req.Password) < 8 || len(req.Password) > 72 {
+		http.Error(w, `{"error":"password must be 8-72 bytes"}`, http.StatusBadRequest)
 		return
 	}
 

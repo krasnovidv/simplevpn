@@ -21,6 +21,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -248,7 +249,9 @@ func main() {
 		<-sigs
 		log.Println("\nShutting down...")
 		if apiSrv != nil {
-			apiSrv.Shutdown()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			apiSrv.Shutdown(ctx)
+			cancel()
 		}
 		listener.Close()
 		os.Exit(0)
@@ -332,6 +335,15 @@ func serveConnection(
 ) {
 	defer conn.Close()
 	remoteAddr := conn.RemoteAddr().String()
+
+	// Defense-in-depth: a panic while parsing attacker-controlled wire data
+	// (e.g. a malformed frame) must only kill this connection's goroutine, never
+	// the whole server process.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[server] recovered from panic handling %s: %v", remoteAddr, r)
+		}
+	}()
 
 	peekConn, isPeekable := conn.(*transport.PeekConn)
 	if !isPeekable {

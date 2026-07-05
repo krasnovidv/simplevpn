@@ -14,7 +14,9 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	filename := filepath.Base(r.URL.Path)
-	log.Printf("[api] GET /download/%s from %s", filename, r.RemoteAddr)
+	// %q quotes the untrusted path segment so it can't inject newlines/control
+	// chars into the log stream (log forging from an unauthenticated endpoint).
+	log.Printf("[api] GET /download/%q from %s", filename, r.RemoteAddr)
 
 	if filename != "simplevpn.apk" {
 		http.Error(w, "not found", http.StatusNotFound)

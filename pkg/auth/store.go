@@ -15,6 +15,21 @@ import (
 
 const bcryptCost = 12
 
+// dummyHash is a valid bcrypt hash at bcryptCost, compared against when a user
+// is unknown or disabled so that every authentication attempt pays the same
+// bcrypt cost. This closes the username-enumeration timing oracle where a
+// missing user would otherwise return in microseconds versus tens of ms for a
+// real bcrypt comparison. Generated at init so it is guaranteed well-formed.
+var dummyHash []byte
+
+func init() {
+	h, err := bcrypt.GenerateFromPassword([]byte("simplevpn-timing-equalizer"), bcryptCost)
+	if err != nil {
+		panic("auth: failed to generate dummy bcrypt hash: " + err.Error())
+	}
+	dummyHash = h
+}
+
 // FileStore manages user accounts persisted in a YAML file.
 type FileStore struct {
 	mu       sync.RWMutex
@@ -64,17 +79,27 @@ func (s *FileStore) Authenticate(username, password string) bool {
 	defer s.mu.RUnlock()
 
 	u, ok := s.users[username]
-	if !ok {
-		logx.Debugf("[auth] authentication failed: user %q not found", username)
-		return false
+
+	// Always run a bcrypt comparison — against the real hash if the user exists
+	// and is enabled, otherwise against a dummy hash — so unknown/disabled users
+	// cost the same wall-clock time as a wrong password for a real user. This
+	// prevents an attacker from enumerating valid usernames by timing.
+	hash := dummyHash
+	valid := ok && !u.Disabled
+	if valid {
+		hash = []byte(u.PasswordHash)
 	}
 
-	if u.Disabled {
-		logx.Debugf("[auth] authentication failed: user %q is disabled", username)
+	err := bcrypt.CompareHashAndPassword(hash, []byte(password))
+	if !valid {
+		if !ok {
+			logx.Debugf("[auth] authentication failed: user %q not found", username)
+		} else {
+			logx.Debugf("[auth] authentication failed: user %q is disabled", username)
+		}
 		return false
 	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)); err != nil {
+	if err != nil {
 		logx.Debugf("[auth] authentication failed: invalid password for user %q", username)
 		return false
 	}
