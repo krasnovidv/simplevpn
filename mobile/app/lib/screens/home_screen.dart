@@ -49,6 +49,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   StreamSubscription<String>? _deepLinkErrorSub;
   UpdateInfo? _updateInfo;
   Timer? _updateTimer;
+  // A critical update opens its dialog by itself, but only once per app run.
+  bool _criticalUpdatePrompted = false;
 
   late final AnimationController _stampPulseController;
   late final AnimationController _stampShakeController;
@@ -383,54 +385,195 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (mounted) {
       setState(() => _updateInfo = info);
       if (info != null) {
-        _log.info('Update available: ${info.version} (code=${info.versionCode})');
+        _log.info('Update available: ${info.version} (code=${info.versionCode})'
+            '${info.critical ? ' [CRITICAL]' : ''}');
+        // A critical update announces itself rather than waiting to be noticed:
+        // a banner is far too easy to walk past when the consequence of missing
+        // it is losing the connection entirely. Once per app session, so the
+        // 30-minute re-check does not nag.
+        if (info.critical && !_criticalUpdatePrompted) {
+          _criticalUpdatePrompted = true;
+          _showUpdateDialog();
+        }
       }
     }
+  }
+
+  /// The update banner. A critical update gets the loud treatment — red, taller,
+  /// spelling out the consequence — because it is the only warning a user who
+  /// closes the dialog will still see on the way to the connect button.
+  Widget _buildUpdateBanner(UpdateInfo info) {
+    final critical = info.critical;
+    final accent = critical ? AppColors.red : AppColors.cyan;
+
+    return Semantics(
+      button: true,
+      label: critical
+          ? 'Важное обновление ${info.version}. Без него VPN перестанет работать. Нажмите, чтобы обновить.'
+          : 'Доступно обновление ${info.version}. Нажмите, чтобы обновить.',
+      child: GestureDetector(
+        onTap: _showUpdateDialog,
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: critical ? 14 : 10),
+          decoration: BoxDecoration(
+            color: accent.withValues(alpha: critical ? 0.18 : 0.10),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: accent.withValues(alpha: critical ? 0.65 : 0.3),
+              width: critical ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                critical ? Icons.warning_amber_rounded : Icons.system_update,
+                color: accent,
+                size: critical ? 26 : 20,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: critical
+                    ? Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'ОБЯЗАТЕЛЬНО ОБНОВИТЕСЬ',
+                            style: TextStyle(
+                              fontFamily: AppFonts.display,
+                              fontSize: 15,
+                              color: accent,
+                            ),
+                          ),
+                          const SizedBox(height: 3),
+                          const Text(
+                            'Иначе VPN перестанет работать',
+                            style: TextStyle(
+                              fontFamily: AppFonts.body,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.white,
+                            ),
+                          ),
+                        ],
+                      )
+                    : Text(
+                        'Доступно обновление v${info.version}',
+                        style: const TextStyle(
+                          fontFamily: AppFonts.body,
+                          fontSize: 13,
+                          color: AppColors.cyan,
+                        ),
+                      ),
+              ),
+              Icon(Icons.chevron_right, color: accent, size: critical ? 24 : 20),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   void _showUpdateDialog() {
     final info = _updateInfo;
     if (info == null) return;
+    final critical = info.critical;
 
     showDialog(
       context: context,
+      // A critical update cannot be waved away by tapping outside it.
+      barrierDismissible: !critical,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF1A1A2E),
-        title: Text(
-          'Обновление v${info.version}',
-          style: const TextStyle(
-            fontFamily: AppFonts.display,
-            color: AppColors.cyan,
-          ),
+        title: Row(
+          children: [
+            if (critical) ...[
+              const Icon(Icons.warning_amber_rounded, color: AppColors.red, size: 28),
+              const SizedBox(width: 10),
+            ],
+            Expanded(
+              child: Text(
+                critical ? 'ВАЖНОЕ ОБНОВЛЕНИЕ' : 'Обновление v${info.version}',
+                style: TextStyle(
+                  fontFamily: AppFonts.display,
+                  fontSize: critical ? 21 : null,
+                  color: critical ? AppColors.red : AppColors.cyan,
+                ),
+              ),
+            ),
+          ],
         ),
-        content: Text(
-          info.changelog.isNotEmpty ? info.changelog : 'Доступна новая версия приложения.',
-          style: const TextStyle(
-            fontFamily: AppFonts.body,
-            color: Colors.white70,
-          ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (critical) ...[
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.red.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.red.withValues(alpha: 0.55)),
+                ),
+                child: const Text(
+                  'Если не обновиться — VPN перестанет подключаться.\n'
+                  'Обновитесь прямо сейчас, это займёт минуту.',
+                  style: TextStyle(
+                    fontFamily: AppFonts.body,
+                    fontSize: 15,
+                    height: 1.4,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 14),
+            ],
+            Text(
+              info.changelog.isNotEmpty ? info.changelog : 'Доступна новая версия приложения.',
+              style: const TextStyle(
+                fontFamily: AppFonts.body,
+                color: Colors.white70,
+              ),
+            ),
+          ],
         ),
         actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _updateService.dismissVersion(info.versionCode);
-              setState(() => _updateInfo = null);
-              _log.info('User skipped version ${info.versionCode}');
-            },
-            child: const Text('Пропустить', style: TextStyle(color: Colors.white38)),
-          ),
+          // "Пропустить" silences the version permanently — deliberately absent
+          // for a critical update, where that choice strands the user.
+          if (!critical)
+            TextButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                _updateService.dismissVersion(info.versionCode);
+                setState(() => _updateInfo = null);
+                _log.info('User skipped version ${info.versionCode}');
+              },
+              child: const Text('Пропустить', style: TextStyle(color: Colors.white38)),
+            ),
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Не сейчас', style: TextStyle(color: Colors.white54)),
+            child: Text(
+              critical ? 'Позже' : 'Не сейчас',
+              style: const TextStyle(color: Colors.white54),
+            ),
           ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: AppColors.cyan),
+            style: FilledButton.styleFrom(
+              backgroundColor: critical ? AppColors.red : AppColors.cyan,
+            ),
             onPressed: () {
               Navigator.pop(ctx);
               _startDownload(info);
             },
-            child: const Text('Обновить', style: TextStyle(color: Colors.black)),
+            child: Text(
+              critical ? 'ОБНОВИТЬ СЕЙЧАС' : 'Обновить',
+              style: TextStyle(
+                color: critical ? AppColors.white : Colors.black,
+                fontWeight: critical ? FontWeight.w800 : null,
+              ),
+            ),
           ),
         ],
       ),
@@ -576,36 +719,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             MaterialPageRoute(builder: (_) => const AdminScreen()),
           ),
         ),
-        if (_updateInfo != null)
-          GestureDetector(
-            onTap: _showUpdateDialog,
-            child: Container(
-              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              decoration: BoxDecoration(
-                color: AppColors.cyan.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.cyan.withValues(alpha: 0.3)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.system_update, color: AppColors.cyan, size: 20),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'Доступно обновление v${_updateInfo!.version}',
-                      style: const TextStyle(
-                        fontFamily: AppFonts.body,
-                        fontSize: 13,
-                        color: AppColors.cyan,
-                      ),
-                    ),
-                  ),
-                  const Icon(Icons.chevron_right, color: AppColors.cyan, size: 20),
-                ],
-              ),
-            ),
-          ),
+        if (_updateInfo != null) _buildUpdateBanner(_updateInfo!),
         Expanded(
           child: Semantics(
             button: true,

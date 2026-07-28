@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 
 import '../models/update_info.dart';
+import '../models/vpn_config.dart';
 import 'update_verifier.dart';
 
 const _dismissedVersionKey = 'dismissed_update_version_code';
@@ -102,6 +103,11 @@ class UpdateService {
       final json = jsonDecode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
       final info = UpdateInfo.fromJson(json);
 
+      // Announced endpoints are applied before any version gate: a server move
+      // has to reach installed apps even when there is no new APK to offer, and
+      // even if the user has dismissed this version.
+      await _mergeAnnouncedEndpoints(info.endpoints);
+
       if (info.apkSha256.isEmpty) {
         debugPrint('[$_tag] REJECTED update: manifest has no apk_sha256');
         return null;
@@ -117,7 +123,9 @@ class UpdateService {
         return null;
       }
 
-      if (await isVersionDismissed(info.versionCode)) {
+      // A critical update ignores a previous "skip": the user dismissing it
+      // once must not be what strands them when the old server goes away.
+      if (!info.critical && await isVersionDismissed(info.versionCode)) {
         debugPrint('[$_tag] Version ${info.versionCode} was dismissed by user');
         return null;
       }
@@ -129,6 +137,31 @@ class UpdateService {
       return null;
     } finally {
       client.close();
+    }
+  }
+
+  /// Adds server addresses announced by the (already signature-verified)
+  /// manifest to the stored config, so the VPN layer can fail over to them when
+  /// the current address stops answering. Additive only: the primary address is
+  /// never replaced here, because a manifest that could repoint the primary
+  /// outright would be a far sharper weapon if the server key ever leaked.
+  Future<void> _mergeAnnouncedEndpoints(List<String> announced) async {
+    if (announced.isEmpty) return;
+
+    final cfgStr = await _secureStorage.read(key: 'vpn_config');
+    if (cfgStr == null || cfgStr.isEmpty) return;
+
+    try {
+      final cfg = VpnConfig.fromJson(cfgStr);
+      final known = <String>{cfg.server, ...cfg.endpoints};
+      final added = announced.where((e) => !known.contains(e)).toList();
+      if (added.isEmpty) return;
+
+      final updated = cfg.copyWith(endpoints: [...cfg.endpoints, ...added]);
+      await _secureStorage.write(key: 'vpn_config', value: updated.toJson());
+      debugPrint('[$_tag] Merged announced endpoints: ${added.join(", ")}');
+    } catch (e) {
+      debugPrint('[$_tag] Failed to merge announced endpoints: $e');
     }
   }
 

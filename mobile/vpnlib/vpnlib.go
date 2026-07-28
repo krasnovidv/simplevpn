@@ -51,6 +51,126 @@ type Config struct {
 	SkipVerify  bool   `json:"skip_verify,omitempty"`
 	Transport   string `json:"transport,omitempty"`   // "ws" (default) or "tls"
 	Fingerprint string `json:"fingerprint,omitempty"` // "chrome" (default Android), "safari" (default iOS), "firefox", "none"
+
+	// Endpoints are additional "host:port" addresses tried, in order, when
+	// Server does not answer. Migrating between hosting providers changes the
+	// server's address but nothing else — same server key, same accounts — so a
+	// client that knows several addresses survives the move without the user
+	// re-importing a config. The winning address is reported by ActiveServer()
+	// so the app can promote it to Server and skip the dead one next time.
+	Endpoints []string `json:"endpoints,omitempty"`
+}
+
+// migrationFallbacks maps a retiring deployment address to its successors,
+// compiled into the client and appended only for configs that actually point at
+// the old address.
+//
+// This exists because of the July 2026 provider move: a client that only ever
+// learned the old address has no way to be told about the new one once the old
+// server stops answering — the update channel carrying that news lives at the
+// same dead address. Baking the destination into the build closes the window
+// for anyone who installs this version at all.
+//
+// Keyed on the old address rather than applied unconditionally, so a config
+// aimed at some other deployment is never silently redirected here.
+// Safe to prune once the old deployment is long retired.
+var migrationFallbacks = map[string][]string{
+	"193.23.3.93:443": {"89.40.233.67:443"},
+}
+
+// endpointCandidates returns Server, then Endpoints, then any compiled-in
+// successor for Server — trimmed and de-duplicated, order preserved. Server
+// always comes first so a healthy primary is never penalised by the fallback
+// machinery.
+func endpointCandidates(cfg *Config) []string {
+	all := append([]string{cfg.Server}, cfg.Endpoints...)
+	all = append(all, migrationFallbacks[strings.TrimSpace(cfg.Server)]...)
+	seen := make(map[string]struct{}, len(all))
+	out := make([]string, 0, len(all))
+	for _, addr := range all {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		if _, dup := seen[addr]; dup {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	return out
+}
+
+// activeServer records the endpoint the live session actually dialled, which is
+// not necessarily cfg.Server when a fallback won. Guarded by activeServerMu.
+var (
+	activeServerMu sync.RWMutex
+	activeServer   string
+)
+
+func setActiveServer(addr string) {
+	activeServerMu.Lock()
+	activeServer = addr
+	activeServerMu.Unlock()
+}
+
+// ActiveServer returns the "host:port" the current session is connected
+// through, or "" when there is no session. The app persists this as the new
+// primary address after a fallback wins.
+func ActiveServer() string {
+	activeServerMu.RLock()
+	defer activeServerMu.RUnlock()
+	return activeServer
+}
+
+// dialTimeout bounds a single endpoint attempt. The worst case for a connect is
+// this multiplied by the number of candidates, so it stays tight enough that
+// walking past a dead primary still feels responsive.
+const dialTimeout = 15 * time.Second
+
+// dialWithFallback tries the candidate endpoints in order and returns the first
+// connection that comes up, together with the address that produced it. base is
+// mutated per attempt (ServerAddr/SNI), so it must not be shared across
+// concurrent dials. When every candidate fails the last error is returned — it
+// describes the most recently tried address.
+func dialWithFallback(dialer transport.Dialer, cfg *Config, base *transport.DialConfig, tag string) (net.Conn, string, error) {
+	candidates := endpointCandidates(cfg)
+	var lastErr error
+
+	for i, addr := range candidates {
+		// SNI follows the address being dialled unless pinned explicitly, so a
+		// fallback endpoint on a different host still presents a coherent
+		// ClientHello.
+		sni := cfg.SNI
+		if sni == "" {
+			if h, _, err := net.SplitHostPort(addr); err == nil {
+				sni = h
+			}
+		}
+		base.ServerAddr = addr
+		base.SNI = sni
+		if base.TLSConfig != nil {
+			base.TLSConfig.ServerName = sni
+		}
+
+		log.Printf("[vpnlib] %s: dialing %s (candidate %d/%d, sni=%s)", tag, addr, i+1, len(candidates), sni)
+		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
+		conn, err := dialer.Dial(ctx, base)
+		cancel()
+		if err == nil {
+			if i > 0 {
+				log.Printf("[vpnlib] %s: primary unreachable, fell back to %s", tag, addr)
+			}
+			return conn, addr, nil
+		}
+		lastErr = err
+		log.Printf("[vpnlib] %s: candidate %s failed: %v", tag, addr, err)
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no usable server address in config")
+	}
+	return nil, "", lastErr
 }
 
 // logBuffer captures log output for retrieval by the mobile app.
@@ -286,15 +406,8 @@ func Connect(configJSON string, fd int) error {
 	}
 	log.Printf("[vpnlib] TUN file opened OK")
 
-	// Resolve SNI
-	sni := cfg.SNI
-	if sni == "" {
-		h, _, err := net.SplitHostPort(cfg.Server)
-		if err == nil {
-			sni = h
-		}
-		log.Printf("[vpnlib] SNI not set, derived from server: %s", sni)
-	}
+	// SNI is resolved per candidate endpoint inside dialWithFallback, since a
+	// fallback address may live on a different host than the primary.
 
 	// Resolve transport settings with defaults
 	tt := transport.Type(cfg.Transport)
@@ -320,15 +433,13 @@ func Connect(configJSON string, fd int) error {
 		return fmt.Errorf("create transport: %w", err)
 	}
 
-	// Build dial config
+	// Build dial config. ServerAddr/SNI are filled in per attempt by
+	// dialWithFallback.
 	dialCfg := &transport.DialConfig{
-		ServerAddr:  cfg.Server,
-		SNI:         sni,
 		Fingerprint: fp,
 	}
 	if cfg.SkipVerify {
 		dialCfg.TLSConfig = &tls.Config{
-			ServerName:         sni,
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS13,
 			NextProtos:         []string{"http/1.1"},
@@ -361,19 +472,18 @@ func Connect(configJSON string, fd int) error {
 		log.Printf("[vpnlib] WARNING: no socket protector set, VPN routing loop may occur")
 	}
 
-	// Dial via transport
-	log.Printf("[vpnlib] Step 2/4: Connecting to %s via %s transport ...", cfg.Server, tt)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	// Dial via transport, walking the fallback endpoints when the primary is dead.
+	log.Printf("[vpnlib] Step 2/4: Connecting via %s transport ...", tt)
 
-	conn, err := dialer.Dial(ctx, dialCfg)
+	conn, dialedAddr, err := dialWithFallback(dialer, &cfg, dialCfg, "Connect")
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: transport dial failed: %v", err)
+		log.Printf("[vpnlib] ERROR: transport dial failed on all endpoints: %v", err)
 		setLastKind(classifyDialErr(err), "dial", err)
 		setStatus("error: connect: " + err.Error())
 		return fmt.Errorf("transport dial: %w", err)
 	}
-	log.Printf("[vpnlib] Transport connected to %s", cfg.Server)
+	setActiveServer(dialedAddr)
+	log.Printf("[vpnlib] Transport connected to %s", dialedAddr)
 
 	// Authenticate with credentials
 	log.Printf("[vpnlib] Step 3/4: Sending credentials for user %q ...", cfg.Username)
@@ -586,13 +696,7 @@ func Preflight(configJSON string) string {
 		return "error: derive keys: " + err.Error()
 	}
 
-	sni := cfg.SNI
-	if sni == "" {
-		h, _, e := net.SplitHostPort(cfg.Server)
-		if e == nil {
-			sni = h
-		}
-	}
+	// SNI is resolved per candidate endpoint inside dialWithFallback.
 	tt := transport.Type(cfg.Transport)
 	if tt == "" {
 		tt = defaultTransport()
@@ -610,14 +714,12 @@ func Preflight(configJSON string) string {
 		return "error: transport: " + err.Error()
 	}
 
+	// ServerAddr/SNI are filled in per attempt by dialWithFallback.
 	dialCfg := &transport.DialConfig{
-		ServerAddr:  cfg.Server,
-		SNI:         sni,
 		Fingerprint: fp,
 	}
 	if cfg.SkipVerify {
 		dialCfg.TLSConfig = &tls.Config{
-			ServerName:         sni,
 			InsecureSkipVerify: true,
 			MinVersion:         tls.VersionTLS13,
 			NextProtos:         []string{"http/1.1"},
@@ -641,18 +743,17 @@ func Preflight(configJSON string) string {
 		log.Printf("[vpnlib] WARNING: no socket protector set in Preflight")
 	}
 
-	log.Printf("[vpnlib] Preflight: dialing %s via %s", cfg.Server, tt)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	log.Printf("[vpnlib] Preflight: dialing via %s", tt)
 
-	conn, err := dialer.Dial(ctx, dialCfg)
+	conn, dialedAddr, err := dialWithFallback(dialer, &cfg, dialCfg, "Preflight")
 	if err != nil {
 		setLastKind(classifyDialErr(err), "dial", err)
 		setStatus("error: connect: " + err.Error())
 		unlockOnce.Do(connectMu.Unlock)
 		return "error: connect: " + err.Error()
 	}
-	log.Printf("[vpnlib] Preflight: connected to %s, authenticating", cfg.Server)
+	setActiveServer(dialedAddr)
+	log.Printf("[vpnlib] Preflight: connected to %s, authenticating", dialedAddr)
 
 	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
 	if err != nil {
@@ -959,16 +1060,22 @@ func cleanup(conn net.Conn, tunFile *os.File) {
 	}
 	current.connected = false
 	current.status = "disconnected"
+	setActiveServer("")
 	log.Printf("[vpnlib] Cleanup done")
 }
 
 // GetStats returns a JSON snapshot of traffic counters for the current session.
-// Returns {"bytes_in":N,"bytes_out":N,"since_ms":N} where since_ms is the Unix
-// millisecond timestamp when the current session started. All values are zero
-// when no session is active.
+// Returns {"bytes_in":N,"bytes_out":N,"since_ms":N,"active_server":"host:port"}
+// where since_ms is the Unix millisecond timestamp when the current session
+// started. All values are zero/empty when no session is active.
+//
+// active_server rides along here rather than on its own channel method because
+// the app already polls stats once a second; that gives it a free signal for
+// "a fallback endpoint won, persist it as the new primary".
 func GetStats() string {
 	in := atomic.LoadInt64(&statsBytesIn)
 	out := atomic.LoadInt64(&statsBytesOut)
 	since := atomic.LoadInt64(&statsConnectedAt)
-	return fmt.Sprintf(`{"bytes_in":%d,"bytes_out":%d,"since_ms":%d}`, in, out, since)
+	return fmt.Sprintf(`{"bytes_in":%d,"bytes_out":%d,"since_ms":%d,"active_server":%q}`,
+		in, out, since, ActiveServer())
 }

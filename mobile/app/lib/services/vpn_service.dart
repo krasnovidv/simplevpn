@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import '../models/traffic_stats.dart';
+import 'config_storage.dart';
 import 'event_log.dart';
 
 sealed class VpnStatus {
@@ -59,6 +60,10 @@ class VpnService with WidgetsBindingObserver {
   static const _pollInterval = Duration(seconds: 5);
 
   final _log = EventLog();
+  final _configStorage = ConfigStorage();
+  // Last address handed to _maybePromoteEndpoint, so the 1 Hz stats poll does
+  // not hit secure storage every second for an address already dealt with.
+  String? _promotedServer;
   VpnStatus _status = const VpnStatusDisconnected();
   final List<void Function(VpnStatus)> _listeners = [];
   Timer? _pollTimer;
@@ -400,8 +405,29 @@ class VpnService with WidgetsBindingObserver {
       }
 
       _statsController.add(TrafficSnapshot(cumulative: stats, samples: List.of(_samples)));
+
+      await _maybePromoteEndpoint(stats.activeServer);
     } catch (e) {
       _log.debug('Stats poll error: $e');
+    }
+  }
+
+  /// Persists the address the tunnel actually came up on as the new primary.
+  /// After the server moves, the old address is dead but still first in the
+  /// config, so every connect would pay a full dial timeout before falling
+  /// through to the live one; promoting it makes the move a one-time cost.
+  Future<void> _maybePromoteEndpoint(String activeServer) async {
+    if (activeServer.isEmpty || activeServer == _promotedServer) return;
+    _promotedServer = activeServer; // set first: never retry-loop on a failure
+
+    try {
+      final cfg = await _configStorage.loadConfig();
+      if (cfg == null || cfg.server == activeServer) return;
+
+      await _configStorage.saveConfig(cfg.promoteEndpoint(activeServer));
+      _log.info('Server address changed to $activeServer — saved as primary');
+    } catch (e) {
+      _log.debug('Endpoint promotion failed (non-fatal): $e');
     }
   }
 

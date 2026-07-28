@@ -8,13 +8,36 @@ import (
 	"time"
 )
 
+// statsCounters decodes the numeric part of the GetStats() payload. The payload
+// also carries active_server (a string), so a plain map[string]int64 would
+// reject the whole document; this type keeps the counters typed and skips
+// fields that are not numbers.
+type statsCounters map[string]int64
+
+func (s *statsCounters) UnmarshalJSON(b []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	out := make(statsCounters, len(raw))
+	for k, v := range raw {
+		var n int64
+		if err := json.Unmarshal(v, &n); err != nil {
+			continue
+		}
+		out[k] = n
+	}
+	*s = out
+	return nil
+}
+
 func TestGetStats_ReturnsValidJSON(t *testing.T) {
 	atomic.StoreInt64(&statsBytesIn, 0)
 	atomic.StoreInt64(&statsBytesOut, 0)
 	atomic.StoreInt64(&statsConnectedAt, 0)
 
 	raw := GetStats()
-	var m map[string]int64
+	var m statsCounters
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("GetStats() returned invalid JSON: %v\nraw=%q", err, raw)
 	}
@@ -32,7 +55,7 @@ func TestGetStats_ReflectsAtomicIncrements(t *testing.T) {
 	atomic.AddInt64(&statsBytesOut, 200)
 
 	raw := GetStats()
-	var m map[string]int64
+	var m statsCounters
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -115,7 +138,7 @@ func TestGetStats_ConcurrentReadsWhileWriting(t *testing.T) {
 			defer wg.Done()
 			for j := 0; j < iterations; j++ {
 				raw := GetStats()
-				var m map[string]int64
+				var m statsCounters
 				if err := json.Unmarshal([]byte(raw), &m); err != nil {
 					t.Errorf("GetStats() returned invalid JSON during concurrent writes: %v", err)
 					return
@@ -141,7 +164,7 @@ func TestGetStats_ResetOnNewSession(t *testing.T) {
 	atomic.StoreInt64(&statsConnectedAt, newSince)
 
 	raw := GetStats()
-	var m map[string]int64
+	var m statsCounters
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
@@ -162,7 +185,7 @@ func TestGetStats_LargeValues(t *testing.T) {
 	atomic.StoreInt64(&statsConnectedAt, time.Now().UnixMilli())
 
 	raw := GetStats()
-	var m map[string]int64
+	var m statsCounters
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("invalid JSON with large values: %v", err)
 	}

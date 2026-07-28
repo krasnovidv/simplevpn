@@ -73,6 +73,20 @@ VpnConfig configFromMap(Map<String, dynamic> map) {
   final username = require('username', 'логин');
   final password = require('password', 'пароль');
 
+  // Fallback endpoints are validated the same way as the primary, but a bad one
+  // is dropped instead of rejecting the import: the primary alone is enough to
+  // connect, and a typo in a spare address must not block onboarding.
+  final endpoints = <String>[];
+  for (final e in VpnConfig.parseEndpoints(map['endpoints'])) {
+    if (e == server) continue;
+    try {
+      _validateServerHostPort(e);
+      endpoints.add(e);
+    } on ConfigImportException {
+      continue;
+    }
+  }
+
   return VpnConfig(
     server: server,
     serverKey: serverKey,
@@ -82,6 +96,7 @@ VpnConfig configFromMap(Map<String, dynamic> map) {
     skipVerify: (map['skip_verify'] as bool?) ?? false,
     transport: (map['transport'] as String?) ?? '',
     fingerprint: (map['fingerprint'] as String?) ?? '',
+    endpoints: endpoints,
   );
 }
 

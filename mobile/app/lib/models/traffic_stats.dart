@@ -5,10 +5,16 @@ class TrafficStats {
   final int bytesOut;
   final int sinceMs;
 
+  /// "host:port" the live session is actually connected through. Differs from
+  /// the configured primary when a fallback endpoint won the dial, which is how
+  /// the app learns that the server has moved. Empty when nothing is connected.
+  final String activeServer;
+
   const TrafficStats({
     required this.bytesIn,
     required this.bytesOut,
     required this.sinceMs,
+    this.activeServer = '',
   });
 
   static const zero = TrafficStats(bytesIn: 0, bytesOut: 0, sinceMs: 0);
@@ -20,6 +26,7 @@ class TrafficStats {
         bytesIn: (map['bytes_in'] as num?)?.toInt() ?? 0,
         bytesOut: (map['bytes_out'] as num?)?.toInt() ?? 0,
         sinceMs: (map['since_ms'] as num?)?.toInt() ?? 0,
+        activeServer: (map['active_server'] as String?) ?? '',
       );
     } catch (_) {
       return zero;
