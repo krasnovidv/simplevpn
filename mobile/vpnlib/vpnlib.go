@@ -78,15 +78,29 @@ var migrationFallbacks = map[string][]string{
 	"193.23.3.93:443": {"89.40.233.67:443"},
 }
 
+// retiredServers lists addresses whose deployment is known to be gone. Configs
+// naming one are not broken, merely out of date — but trying such an address
+// first makes every single connect pay a full dialTimeout before reaching a
+// server that works, which users experience as the app being broken.
+//
+// Demoted to last rather than dropped: once a live candidate answers the
+// retired one is never dialled at all, so keeping it costs nothing, and it
+// still serves as a last resort if the address is ever brought back while the
+// current server is unreachable.
+var retiredServers = map[string]struct{}{
+	"193.23.3.93:443": {},
+}
+
 // endpointCandidates returns Server, then Endpoints, then any compiled-in
-// successor for Server — trimmed and de-duplicated, order preserved. Server
-// always comes first so a healthy primary is never penalised by the fallback
-// machinery.
+// successor for Server — trimmed and de-duplicated, order otherwise preserved,
+// with retired addresses moved to the end. A healthy primary is never penalised
+// by the fallback machinery; a dead one no longer delays everyone behind it.
 func endpointCandidates(cfg *Config) []string {
 	all := append([]string{cfg.Server}, cfg.Endpoints...)
 	all = append(all, migrationFallbacks[strings.TrimSpace(cfg.Server)]...)
 	seen := make(map[string]struct{}, len(all))
 	out := make([]string, 0, len(all))
+	var retired []string
 	for _, addr := range all {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -96,9 +110,13 @@ func endpointCandidates(cfg *Config) []string {
 			continue
 		}
 		seen[addr] = struct{}{}
+		if _, gone := retiredServers[addr]; gone {
+			retired = append(retired, addr)
+			continue
+		}
 		out = append(out, addr)
 	}
-	return out
+	return append(out, retired...)
 }
 
 // activeServer records the endpoint the live session actually dialled, which is
