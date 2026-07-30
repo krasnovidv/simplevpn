@@ -75,7 +75,8 @@ type Config struct {
 // aimed at some other deployment is never silently redirected here.
 // Safe to prune once the old deployment is long retired.
 var migrationFallbacks = map[string][]string{
-	"193.23.3.93:443": {"89.40.233.67:443"},
+	"193.23.3.93:443":  {"89.40.233.67:443", "185.192.246.127:443", "185.192.246.127:2053"},
+	"89.40.233.67:443": {"185.192.246.127:443", "185.192.246.127:2053"},
 }
 
 // retiredServers lists addresses whose deployment is known to be gone. Configs

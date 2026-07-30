@@ -383,6 +383,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     _log.debug('Checking for updates...');
     final info = await _updateService.checkForUpdate();
     if (mounted) {
+      // The check may have merged newly announced endpoints into the stored
+      // config; re-read it so this screen and the widget's cached connect
+      // params see them, not the pre-check snapshot.
+      _loadConfig();
       setState(() => _updateInfo = info);
       if (info != null) {
         _log.info('Update available: ${info.version} (code=${info.versionCode})'
@@ -916,6 +920,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       _vpnService.disconnect();
     } else if (_config != null) {
       _log.info('User pressed Connect');
+      // Connect from the stored config, not the in-memory snapshot: the update
+      // check merges announced endpoints into storage while this screen is
+      // open, and a server move announced after launch must reach the dialer
+      // without waiting for an app restart.
+      final fresh = await _storage.loadConfig();
+      if (fresh != null) {
+        _config = fresh;
+      }
       _log.debug('Config: server=${_config!.server}, sni=${_config!.sni}, skipVerify=${_config!.skipVerify}');
       final validationError = _validateConfig(_config!);
       if (validationError != null) {

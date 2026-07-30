@@ -11,6 +11,8 @@ import (
 const (
 	retiredAddr = "193.23.3.93:443"
 	liveAddr    = "89.40.233.67:443"
+	newAddr     = "185.192.246.127:443"
+	newAddrAlt  = "185.192.246.127:2053"
 )
 
 func TestEndpointCandidates(t *testing.T) {
@@ -32,14 +34,26 @@ func TestEndpointCandidates(t *testing.T) {
 		{
 			// The whole point of the rebuild: a stored config still naming the
 			// dead server must reach the live one on the first attempt.
-			name: "retired primary is demoted behind its successor",
+			name: "retired primary is demoted behind its successors",
 			cfg:  Config{Server: retiredAddr},
-			want: []string{liveAddr, retiredAddr},
+			want: []string{liveAddr, newAddr, newAddrAlt, retiredAddr},
+		},
+		{
+			// August 2026 move: a config naming the second-generation server
+			// must be able to reach the Timeweb one once 89.40 goes dark.
+			name: "current primary carries compiled successors",
+			cfg:  Config{Server: liveAddr},
+			want: []string{liveAddr, newAddr, newAddrAlt},
+		},
+		{
+			name: "announced endpoints come before compiled fallbacks",
+			cfg:  Config{Server: liveAddr, Endpoints: []string{newAddrAlt}},
+			want: []string{liveAddr, newAddrAlt, newAddr},
 		},
 		{
 			name: "retired address stays last however it entered the list",
 			cfg:  Config{Server: liveAddr, Endpoints: []string{retiredAddr, "89.40.233.67:2053"}},
-			want: []string{liveAddr, "89.40.233.67:2053", retiredAddr},
+			want: []string{liveAddr, "89.40.233.67:2053", newAddr, newAddrAlt, retiredAddr},
 		},
 		{
 			name: "duplicates collapse, first position wins",
