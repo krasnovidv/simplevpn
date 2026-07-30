@@ -33,7 +33,9 @@ class UpdateService {
   /// VPN config. The server key authenticates update manifests (see
   /// [UpdateVerifier]).
   Future<void> _loadConfig() async {
-    if (_serverHost != null) return;
+    // Re-read every time: the stored primary changes when a fallback address
+    // is promoted mid-session, and a cached dead host would keep every
+    // subsequent check pointed at a server that no longer answers.
     final cfgStr = await _secureStorage.read(key: 'vpn_config');
     if (cfgStr == null || cfgStr.isEmpty) {
       debugPrint('[$_tag] No VPN config found in secure storage');

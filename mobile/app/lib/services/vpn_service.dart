@@ -352,8 +352,25 @@ class VpnService with WidgetsBindingObserver {
     // Start/stop stats polling based on connection state
     if (status is VpnStatusConnected && prev is! VpnStatusConnected) {
       _startStatsPolling();
+      _promoteActiveServer();
     } else if (status is VpnStatusReconnecting || status is VpnStatusDisconnected) {
       _stopStatsPolling();
+    }
+  }
+
+  /// Persists the address this session actually came up on, independent of the
+  /// stats poll. The poll only runs while some widget listens to the traffic
+  /// stream, so promotion must not ride on it: with no subscribers a config
+  /// would keep its dead primary forever — which is exactly how phones were
+  /// still carrying 193.23.3.93 a year after that server died.
+  Future<void> _promoteActiveServer() async {
+    try {
+      final raw = await _channel.invokeMethod<String>('getStats');
+      if (raw == null) return;
+      final stats = TrafficStats.fromJson(raw);
+      await _maybePromoteEndpoint(stats.activeServer);
+    } catch (e) {
+      _log.debug('Active-server check failed (non-fatal): $e');
     }
   }
 
