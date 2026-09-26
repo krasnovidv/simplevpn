@@ -195,6 +195,40 @@ func DecoyHandler() http.Handler {
 	return mux
 }
 
+// WriteDecoyResponse answers an HTTP request the way the decoy nginx site
+// would: the landing page at "/", robots.txt, and nginx's stock 404 elsewhere.
+func WriteDecoyResponse(w io.Writer, method, path string) error {
+	switch path {
+	case "/":
+		return writeHTTP(w, method, 200, "OK", "text/html; charset=utf-8", decoyHTML)
+	case "/robots.txt":
+		return writeHTTP(w, method, 200, "OK", "text/plain", "User-agent: *\nDisallow: /admin/\n")
+	default:
+		return writeHTTP(w, method, 404, "Not Found", "text/html", nginxErrorPage("404 Not Found"))
+	}
+}
+
+// WriteBadRequest is nginx's reply to bytes that are not HTTP at all.
+func WriteBadRequest(w io.Writer) error {
+	return writeHTTP(w, http.MethodGet, 400, "Bad Request", "text/html", nginxErrorPage("400 Bad Request"))
+}
+
+func nginxErrorPage(title string) string {
+	return "<html>\r\n<head><title>" + title + "</title></head>\r\n<body>\r\n<center><h1>" + title +
+		"</h1></center>\r\n<hr><center>nginx/1.24.0</center>\r\n</body>\r\n</html>\r\n"
+}
+
+func writeHTTP(w io.Writer, method string, code int, status, ctype, body string) error {
+	head := fmt.Sprintf("HTTP/1.1 %d %s\r\nServer: nginx/1.24.0\r\nDate: %s\r\nContent-Type: %s\r\n"+
+		"Content-Length: %d\r\nConnection: close\r\n\r\n",
+		code, status, time.Now().UTC().Format(http.TimeFormat), ctype, len(body))
+	if method == http.MethodHead {
+		body = ""
+	}
+	_, err := io.WriteString(w, head+body)
+	return err
+}
+
 // NewDecoyTLSConfig создаёт TLS-конфиг с самоподписанным сертификатом.
 // В продакшне передай настоящий сертификат Let's Encrypt — это значительно
 // снижает подозрительность сервера для DPI.
@@ -208,7 +242,9 @@ func NewDecoyTLSConfig(certFile, keyFile string) (*tls.Config, error) {
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS13, // только TLS 1.3 — современно и безопасно
 		// Настройки, характерные для nginx/nginx+:
-		NextProtos: []string{"h2", "http/1.1"},
+		// HTTP/1.1 only: the decoy site speaks nothing else, and negotiating h2
+		// then answering in HTTP/1.1 is an easy tell for an active prober.
+		NextProtos: []string{"http/1.1"},
 	}, nil
 }
 

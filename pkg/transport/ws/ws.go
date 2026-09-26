@@ -199,17 +199,10 @@ func clientUpgrade(conn net.Conn, host string) (*Conn, error) {
 
 	log.Printf("[transport/ws] Upgrade accepted (101 Switching Protocols)")
 
-	// Transfer any data buffered by the bufio.Reader to the WS conn
-	// so it is not lost when we switch to reading from the raw conn.
+	// Keep reading frames through br: whatever it buffered past the HTTP
+	// response is already WebSocket-framed.
 	wsConn := WrapClient(conn)
-	if br.Buffered() > 0 {
-		extra := make([]byte, br.Buffered())
-		n, _ := br.Read(extra)
-		if n > 0 {
-			wsConn.readBuf = extra[:n]
-			log.Printf("[transport/ws] Transferred %d buffered bytes to WS conn", n)
-		}
-	}
+	wsConn.src = br
 	return wsConn, nil
 }
 
@@ -241,12 +234,13 @@ func ServerUpgrade(conn net.Conn, peekedData []byte) (*Conn, error) {
 		return nil, fmt.Errorf("read upgrade request: %w", err)
 	}
 
-	// Validate upgrade request
-	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
-		log.Printf("[transport/ws] Rejected non-WS request from %s: method=%s path=%s upgrade=%q host=%q",
-			conn.RemoteAddr(), req.Method, req.URL.Path, req.Header.Get("Upgrade"), req.Host)
-		// Do NOT write a response here — the caller (serveDecoy) handles it.
-		return nil, fmt.Errorf("not a WebSocket upgrade request (upgrade=%q)", req.Header.Get("Upgrade"))
+	// Validate upgrade request. Anything but an upgrade on our path is an
+	// ordinary web request (or a probe) and gets the decoy site instead.
+	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") || req.URL.Path != wsPath {
+		log.Printf("[transport/ws] Rejected non-WS request from %s: method=%s path=%s upgrade=%q",
+			conn.RemoteAddr(), req.Method, req.URL.Path, req.Header.Get("Upgrade"))
+		// Do NOT write a response here — the caller serves the decoy.
+		return nil, &NotUpgradeError{Method: req.Method, Path: req.URL.Path}
 	}
 
 	wsKey := req.Header.Get("Sec-WebSocket-Key")
@@ -273,18 +267,23 @@ func ServerUpgrade(conn net.Conn, peekedData []byte) (*Conn, error) {
 
 	log.Printf("[transport/ws] WebSocket upgrade complete for %s (path=%s)", conn.RemoteAddr(), req.URL.Path)
 
-	// Transfer any data buffered by the bufio.Reader to the WS conn
-	// so it is not lost when we switch to reading from the raw conn.
+	// Keep reading frames through br: whatever it buffered past the HTTP
+	// request is already WebSocket-framed.
 	wsConn := WrapServer(conn)
-	if br.Buffered() > 0 {
-		extra := make([]byte, br.Buffered())
-		n, _ := br.Read(extra)
-		if n > 0 {
-			wsConn.readBuf = extra[:n]
-			log.Printf("[transport/ws] Transferred %d buffered bytes to WS conn", n)
-		}
-	}
+	wsConn.src = br
 	return wsConn, nil
+}
+
+// NotUpgradeError is returned by ServerUpgrade for a well-formed HTTP request
+// that is not a WebSocket upgrade to the tunnel path, so the caller can answer
+// it the way the decoy web server would.
+type NotUpgradeError struct {
+	Method string
+	Path   string
+}
+
+func (e *NotUpgradeError) Error() string {
+	return fmt.Sprintf("not a WebSocket upgrade request (%s %s)", e.Method, e.Path)
 }
 
 // computeAcceptKey calculates the Sec-WebSocket-Accept value (RFC 6455 §4.2.2).

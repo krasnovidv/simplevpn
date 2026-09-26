@@ -13,10 +13,12 @@ import (
 
 // Frame opcodes (RFC 6455 §5.2)
 const (
-	opcodeBinary = 0x2
-	opcodeClose  = 0x8
-	opcodePing   = 0x9
-	opcodePong   = 0xA
+	opcodeContinuation = 0x0
+	opcodeText         = 0x1
+	opcodeBinary       = 0x2
+	opcodeClose        = 0x8
+	opcodePing         = 0x9
+	opcodePong         = 0xA
 )
 
 // Frame header bits
@@ -126,25 +128,34 @@ func readFrameHeader(r io.Reader) (*frameHeader, error) {
 	return h, nil
 }
 
+// maxMessageSize bounds a single (possibly fragmented) data message.
+const maxMessageSize = 1 << 20
+
 // readFrame reads a complete WebSocket frame payload.
 // Returns the opcode and unmasked payload data.
 func readFrame(r io.Reader) (opcode byte, data []byte, err error) {
+	opcode, _, data, err = readFrameFin(r)
+	return opcode, data, err
+}
+
+// readFrameFin is readFrame that also reports the FIN bit.
+func readFrameFin(r io.Reader) (opcode byte, fin bool, data []byte, err error) {
 	h, err := readFrameHeader(r)
 	if err != nil {
-		return 0, nil, err
+		return 0, false, nil, err
 	}
 
 	// Reject negative (high bit set in a 64-bit length field) and oversized
 	// frames before allocating — a negative length would panic make([]byte, n)
 	// and a malicious client could otherwise crash the server with one frame.
-	if h.payloadLen < 0 || h.payloadLen > 1<<20 { // 1MB sanity limit for VPN packets
-		return 0, nil, fmt.Errorf("invalid frame length: %d bytes", h.payloadLen)
+	if h.payloadLen < 0 || h.payloadLen > maxMessageSize {
+		return 0, false, nil, fmt.Errorf("invalid frame length: %d bytes", h.payloadLen)
 	}
 
 	data = make([]byte, h.payloadLen)
 	if h.payloadLen > 0 {
 		if _, err := io.ReadFull(r, data); err != nil {
-			return 0, nil, fmt.Errorf("read frame payload: %w", err)
+			return 0, false, nil, fmt.Errorf("read frame payload: %w", err)
 		}
 
 		// Unmask
@@ -155,7 +166,7 @@ func readFrame(r io.Reader) (opcode byte, data []byte, err error) {
 		}
 	}
 
-	return h.opcode, data, nil
+	return h.opcode, h.fin, data, nil
 }
 
 // writePong sends a pong frame with the given payload.

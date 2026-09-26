@@ -108,7 +108,7 @@ type Listener interface {
 type DialerFactory func(fingerprint FingerprintProfile) Dialer
 
 var (
-	dialersMu   sync.RWMutex
+	dialersMu       sync.RWMutex
 	dialerFactories = make(map[Type]DialerFactory)
 )
 
@@ -143,10 +143,12 @@ func NewDialer(t Type, fingerprint FingerprintProfile) (Dialer, error) {
 func NewListener(cfg *ListenConfig) (Listener, error) {
 	log.Printf("[transport] Creating auto-detect listener on %s", cfg.Addr)
 
-	tlsListener, err := tls.Listen("tcp", cfg.Addr, cfg.TLSConfig)
+	lc := net.ListenConfig{Control: listenControl}
+	tcpListener, err := lc.Listen(context.Background(), "tcp", cfg.Addr)
 	if err != nil {
 		return nil, fmt.Errorf("tls listen on %s: %w", cfg.Addr, err)
 	}
+	tlsListener := tls.NewListener(tcpListener, cfg.TLSConfig)
 
 	log.Printf("[transport] Listening on %s (TLS, auto-detect WS/raw)", cfg.Addr)
 	return &autoDetectListener{inner: tlsListener}, nil
