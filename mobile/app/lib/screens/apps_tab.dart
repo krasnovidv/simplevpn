@@ -15,7 +15,9 @@ import 'split_tunneling_screen.dart';
 
 /// «Приложения»: split tunneling by app (Android).
 class AppsTab extends StatefulWidget {
-  const AppsTab({super.key});
+  /// Whether the tab is on screen; coming back re-sorts the list.
+  final bool active;
+  const AppsTab({super.key, this.active = true});
 
   @override
   State<AppsTab> createState() => _AppsTabState();
@@ -50,6 +52,19 @@ class _AppsTabState extends State<AppsTab> {
   String _query = '';
   bool _dirty = false;
 
+  // Selected apps as of the last re-sort: they are listed first. Kept apart
+  // from the live selection so a row does not jump away under the finger
+  // the moment its switch is flipped.
+  Set<String> _pinned = {};
+
+  void _resort() => _pinned = _cfg.apps.toSet();
+
+  @override
+  void didUpdateWidget(AppsTab old) {
+    super.didUpdateWidget(old);
+    if (widget.active && !old.active) setState(_resort);
+  }
+
   @override
   void initState() {
     super.initState();
@@ -58,7 +73,12 @@ class _AppsTabState extends State<AppsTab> {
 
   Future<void> _load() async {
     final cfg = await _storage.getSplitTunnelConfig();
-    if (mounted) setState(() => _cfg = cfg);
+    if (mounted) {
+      setState(() {
+        _cfg = cfg;
+        _resort();
+      });
+    }
     if (!Platform.isAndroid) return;
     try {
       final raw = await _channel.invokeMethod<List>('listInstalledApps') ?? const [];
@@ -85,7 +105,10 @@ class _AppsTabState extends State<AppsTab> {
     });
   }
 
-  void _setMode(int i) => _save(_cfg.copyWith(mode: SplitTunnelMode.values[[0, 2, 1][i]]));
+  Future<void> _setMode(int i) async {
+    await _save(_cfg.copyWith(mode: SplitTunnelMode.values[[0, 2, 1][i]]));
+    setState(_resort);
+  }
 
   void _toggle(String pkg, bool on) {
     final apps = List<String>.from(_cfg.apps);
@@ -110,7 +133,12 @@ class _AppsTabState extends State<AppsTab> {
     final q = _query.toLowerCase();
     final shown = apps
         ?.where((a) => q.isEmpty || a.label.toLowerCase().contains(q) || a.pkg.contains(q))
-        .toList();
+        .toList()
+      ?..sort((a, b) {
+        final pa = _pinned.contains(a.pkg), pb = _pinned.contains(b.pkg);
+        if (pa != pb) return pa ? -1 : 1;
+        return a.label.toLowerCase().compareTo(b.label.toLowerCase());
+      });
     final off = _cfg.mode == SplitTunnelMode.off;
     final bold = TextStyle(color: c.text, fontWeight: FontWeight.w800);
     final app = AppScope.of(context);
@@ -149,7 +177,10 @@ class _AppsTabState extends State<AppsTab> {
                 onChanged: _setMode,
               ),
               const SizedBox(height: 14),
-              _SearchField(onChanged: (v) => setState(() => _query = v.trim())),
+              _SearchField(onChanged: (v) => setState(() {
+                    _query = v.trim();
+                    _resort();
+                  })),
               const SizedBox(height: 14),
             ]),
           ),

@@ -271,7 +271,7 @@ class _ShellState extends State<_Shell> with SingleTickerProviderStateMixin {
             },
             child: IndexedStack(index: _tab, children: [
               MainTab(onUpdateTap: widget.onUpdateTap),
-              const AppsTab(),
+              AppsTab(active: _tab == 1),
               const SettingsTab(),
             ]),
           ),
