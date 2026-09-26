@@ -3,8 +3,8 @@
 *.dll
 *.so
 *.dylib
-server-hardened
-client-hardened
+/server-hardened
+/client-hardened
 
 # APK builds
 apks/
