@@ -76,33 +76,34 @@ type Config struct {
 // aimed at some other deployment is never silently redirected here.
 // Safe to prune once the old deployment is long retired.
 var migrationFallbacks = map[string][]string{
-	"193.23.3.93:443":  {"89.40.233.67:443", "185.192.246.127:443", "185.192.246.127:2053"},
+	"193.23.3.93:443":  {"185.192.246.127:443", "185.192.246.127:2053"},
 	"89.40.233.67:443": {"185.192.246.127:443", "185.192.246.127:2053"},
 }
 
-// retiredServers lists addresses whose deployment is known to be gone. Configs
-// naming one are not broken, merely out of date — but trying such an address
-// first makes every single connect pay a full dialTimeout before reaching a
-// server that works, which users experience as the app being broken.
+// abandonedServers lists addresses that are no longer ours. They are never
+// dialled: the provider hands such an IP to someone else, and a client that
+// kept dialling it would send its credentials to whoever holds it now (the
+// TLS layer does not pin our certificate). Configs naming one still reach the
+// current server through migrationFallbacks, which is keyed on the old
+// address, and then promote the address that answered.
 //
-// Demoted to last rather than dropped: once a live candidate answers the
-// retired one is never dialled at all, so keeping it costs nothing, and it
-// still serves as a last resort if the address is ever brought back while the
-// current server is unreachable.
-var retiredServers = map[string]struct{}{
-	"193.23.3.93:443": {},
+//   - 193.23.3.93  — Beget VPS, gone since 2026-07-28.
+//   - 89.40.233.67 — reinstalled for another tenant by 2026-09-26 (new SSH
+//     host key, our ports closed).
+var abandonedServers = map[string]struct{}{
+	"193.23.3.93:443":   {},
+	"89.40.233.67:443":  {},
+	"89.40.233.67:2053": {},
 }
 
 // endpointCandidates returns Server, then Endpoints, then any compiled-in
 // successor for Server — trimmed and de-duplicated, order otherwise preserved,
-// with retired addresses moved to the end. A healthy primary is never penalised
-// by the fallback machinery; a dead one no longer delays everyone behind it.
+// with abandoned addresses removed.
 func endpointCandidates(cfg *Config) []string {
 	all := append([]string{cfg.Server}, cfg.Endpoints...)
 	all = append(all, migrationFallbacks[strings.TrimSpace(cfg.Server)]...)
 	seen := make(map[string]struct{}, len(all))
 	out := make([]string, 0, len(all))
-	var retired []string
 	for _, addr := range all {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -112,13 +113,12 @@ func endpointCandidates(cfg *Config) []string {
 			continue
 		}
 		seen[addr] = struct{}{}
-		if _, gone := retiredServers[addr]; gone {
-			retired = append(retired, addr)
+		if _, gone := abandonedServers[addr]; gone {
 			continue
 		}
 		out = append(out, addr)
 	}
-	return append(out, retired...)
+	return out
 }
 
 // activeServer records the endpoint the live session actually dialled, which is

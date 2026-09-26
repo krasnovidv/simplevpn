@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-// The retired address is the one users still carry in their stored config after
-// the July 2026 move, so the ordering rules below are what decides whether
-// connecting feels instant or costs a dialTimeout first.
+// Both earlier deployments are gone and their addresses belong to other people
+// now; configs still naming them must go straight to the current server and
+// never dial the old address (see abandonedServers).
 const (
-	retiredAddr = "193.23.3.93:443"
-	liveAddr    = "89.40.233.67:443"
-	newAddr     = "185.192.246.127:443"
-	newAddrAlt  = "185.192.246.127:2053"
+	firstAddr  = "193.23.3.93:443"
+	secondAddr = "89.40.233.67:443"
+	newAddr    = "185.192.246.127:443"
+	newAddrAlt = "185.192.246.127:2053"
 )
 
 func TestEndpointCandidates(t *testing.T) {
@@ -32,28 +32,24 @@ func TestEndpointCandidates(t *testing.T) {
 			want: []string{"1.2.3.4:443", "5.6.7.8:443", "9.9.9.9:2053"},
 		},
 		{
-			// The whole point of the rebuild: a stored config still naming the
-			// dead server must reach the live one on the first attempt.
-			name: "retired primary is demoted behind its successors",
-			cfg:  Config{Server: retiredAddr},
-			want: []string{liveAddr, newAddr, newAddrAlt, retiredAddr},
+			name: "first-generation primary goes straight to the current server",
+			cfg:  Config{Server: firstAddr},
+			want: []string{newAddr, newAddrAlt},
 		},
 		{
-			// August 2026 move: a config naming the second-generation server
-			// must be able to reach the Timeweb one once 89.40 goes dark.
-			name: "current primary carries compiled successors",
-			cfg:  Config{Server: liveAddr},
-			want: []string{liveAddr, newAddr, newAddrAlt},
+			name: "second-generation primary goes straight to the current server",
+			cfg:  Config{Server: secondAddr},
+			want: []string{newAddr, newAddrAlt},
 		},
 		{
 			name: "announced endpoints come before compiled fallbacks",
-			cfg:  Config{Server: liveAddr, Endpoints: []string{newAddrAlt}},
-			want: []string{liveAddr, newAddrAlt, newAddr},
+			cfg:  Config{Server: secondAddr, Endpoints: []string{newAddrAlt}},
+			want: []string{newAddrAlt, newAddr},
 		},
 		{
-			name: "retired address stays last however it entered the list",
-			cfg:  Config{Server: liveAddr, Endpoints: []string{retiredAddr, "89.40.233.67:2053"}},
-			want: []string{liveAddr, "89.40.233.67:2053", newAddr, newAddrAlt, retiredAddr},
+			name: "abandoned addresses are dropped however they entered the list",
+			cfg:  Config{Server: newAddr, Endpoints: []string{firstAddr, "89.40.233.67:2053", newAddrAlt}},
+			want: []string{newAddr, newAddrAlt},
 		},
 		{
 			name: "duplicates collapse, first position wins",
@@ -93,18 +89,18 @@ func TestEndpointCandidates(t *testing.T) {
 	}
 }
 
-// Every retired address must have somewhere to go, otherwise demoting it just
-// moves the timeout to the end of the list instead of removing it.
-func TestRetiredServersHaveSuccessors(t *testing.T) {
-	for addr := range retiredServers {
-		successors := migrationFallbacks[addr]
-		if len(successors) == 0 {
-			t.Errorf("retired %q has no entry in migrationFallbacks: clients holding it would have nothing to fall back to", addr)
-			continue
+// Every abandoned address that can be a config's primary must lead somewhere,
+// or such a config would have no candidate at all.
+func TestAbandonedServersHaveSuccessors(t *testing.T) {
+	for _, addr := range []string{firstAddr, secondAddr} {
+		if len(endpointCandidates(&Config{Server: addr})) == 0 {
+			t.Errorf("config with primary %q has nothing to dial", addr)
 		}
+	}
+	for addr, successors := range migrationFallbacks {
 		for _, s := range successors {
-			if _, gone := retiredServers[s]; gone {
-				t.Errorf("retired %q falls back to %q, which is also retired", addr, s)
+			if _, gone := abandonedServers[s]; gone {
+				continue // skipped at dial time; the rest of the list carries it
 			}
 			if !strings.Contains(s, ":") {
 				t.Errorf("successor %q of %q is not host:port", s, addr)
