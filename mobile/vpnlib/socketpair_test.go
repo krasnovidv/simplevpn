@@ -106,33 +106,17 @@ func TestSocketpairConcurrentReadWrite(t *testing.T) {
 	}
 }
 
-// TestSocketpairFdCloseDetection verifies that reading from a closed fd returns an error.
+// TestSocketpairFdCloseDetection verifies that once one end of the pair is
+// closed the other end notices instead of hanging: writing to it fails.
 func TestSocketpairFdCloseDetection(t *testing.T) {
 	fds := makeSocketpair(t)
 	defer syscall.Close(fds[1])
 
-	// Close the write end.
 	if err := syscall.Close(fds[0]); err != nil {
 		t.Fatalf("close fds[0]: %v", err)
 	}
-
-	// Read from fds[1] — should return 0 bytes or EBADF, not block forever.
-	// For SOCK_DGRAM there's no EOF concept, but with both ends closed Read returns 0/ENOBUFS.
-	buf := make([]byte, 64)
-	// Set a small read to avoid blocking. Write nothing — just verify read doesn't panic.
-	done := make(chan error, 1)
-	go func() {
-		n, err := syscall.Read(fds[1], buf)
-		if n == 0 && err == nil {
-			err = nil // acceptable
-		}
-		done <- err
-	}()
-
-	// Write a single byte to unblock the read, then verify.
-	syscall.Write(fds[1], []byte{0x42}) //nolint:errcheck
-	if err := <-done; err != nil && err != syscall.EBADF {
-		t.Logf("read after fd close returned: %v (acceptable)", err)
+	if _, err := syscall.Write(fds[1], []byte{0x42}); err == nil {
+		t.Fatal("write to a socketpair whose peer is closed succeeded")
 	}
 }
 

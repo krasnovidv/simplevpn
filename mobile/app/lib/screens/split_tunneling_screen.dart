@@ -13,8 +13,7 @@ class SplitTunnelingScreen extends StatefulWidget {
   State<SplitTunnelingScreen> createState() => _SplitTunnelingScreenState();
 }
 
-class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
-    with SingleTickerProviderStateMixin {
+class _SplitTunnelingScreenState extends State<SplitTunnelingScreen> {
   static const _channel = MethodChannel('com.simplevpn/vpn');
   final _storage = ConfigStorage();
 
@@ -30,12 +29,9 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
   final _routeCtrl = TextEditingController();
   String? _routeError;
 
-  late final TabController _tabController;
-
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
     _load();
   }
 
@@ -128,29 +124,15 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Раздельное туннелирование'),
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: 'Приложения', icon: Icon(Icons.apps)),
-            Tab(text: 'Маршруты', icon: Icon(Icons.route)),
-          ],
-        ),
-      ),
+      appBar: AppBar(title: const Text('Раздельное туннелирование')),
       body: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
                 _buildModeSelector(),
+                // Android splits by app, iOS by destination route.
                 Expanded(
-                  child: TabBarView(
-                    controller: _tabController,
-                    children: [
-                      _buildAppsTab(),
-                      _buildRoutesTab(),
-                    ],
-                  ),
+                  child: Platform.isAndroid ? _buildAppsTab() : _buildRoutesTab(),
                 ),
               ],
             ),
@@ -473,7 +455,6 @@ class _SplitTunnelingScreenState extends State<SplitTunnelingScreen>
 
   @override
   void dispose() {
-    _tabController.dispose();
     _routeCtrl.dispose();
     super.dispose();
   }

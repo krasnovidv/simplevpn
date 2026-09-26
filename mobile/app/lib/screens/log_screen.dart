@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../services/event_log.dart';
 
 class LogScreen extends StatefulWidget {
@@ -30,6 +31,22 @@ class _LogScreenState extends State<LogScreen> {
       appBar: AppBar(
         title: const Text('Журнал подключений'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.copy_all_outlined),
+            tooltip: 'Скопировать журнал',
+            onPressed: logs.isEmpty
+                ? null
+                : () {
+                    Clipboard.setData(ClipboardData(
+                      text: logs
+                          .map((l) => '${_formatTime(l.time)} [${l.level}] ${l.message}')
+                          .join('\n'),
+                    ));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Журнал скопирован')),
+                    );
+                  },
+          ),
           IconButton(
             icon: const Icon(Icons.delete_outline),
             tooltip: 'Очистить журнал',

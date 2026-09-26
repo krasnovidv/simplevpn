@@ -156,42 +156,43 @@ class VpnService with WidgetsBindingObserver {
     _listeners.remove(listener);
   }
 
+  // Reconnect policy is fixed: always retry transient failures with backoff.
+  // Android decides this natively; iOS still reads these from the call.
+  static const _reconnectArgs = {
+    'auto_reconnect': true,
+    'reconnect_max_attempts': 8,
+    'reconnect_max_backoff_s': 60,
+  };
+
   Future<void> connect(
     String configJson, {
-    bool autoReconnect = false,
     bool killSwitch = false,
-    int reconnectMaxAttempts = 5,
-    int reconnectMaxBackoffS = 60,
     String splitTunnelMode = 'off',
     List<String> splitTunnelApps = const [],
     List<String> splitTunnelRoutes = const [],
   }) async {
-    // Log config with masked PSK
-    final masked = _maskConfig(configJson);
     _log.info('Connecting to server...');
-    _log.debug('Config: $masked, autoReconnect=$autoReconnect, killSwitch=$killSwitch');
+    _log.debug('Config: ${_maskConfig(configJson)}, killSwitch=$killSwitch');
     _setStatus(const VpnStatusConnecting());
     try {
-      _log.debug('Calling platform connect...');
       await _channel.invokeMethod('connect', {
         'config': configJson,
-        'auto_reconnect': autoReconnect,
         'kill_switch': killSwitch,
-        'reconnect_max_attempts': reconnectMaxAttempts,
-        'reconnect_max_backoff_s': reconnectMaxBackoffS,
         'split_tunnel_mode': splitTunnelMode,
         'split_tunnel_apps': splitTunnelApps,
         'split_tunnel_routes': splitTunnelRoutes,
+        ..._reconnectArgs,
       });
       _log.info('Connect request sent to native layer');
       _startPolling();
     } on PlatformException catch (e) {
       _log.error('Connect failed: ${e.message} (code: ${e.code})');
-      _log.debug('Platform exception details: ${e.details}');
-      _setStatus(VpnStatusError(message: e.message));
-    } catch (e, st) {
+      _setStatus(e.code == 'VPN_PERMISSION'
+          // The system consent dialog is up; the user connects again after it.
+          ? const VpnStatusDisconnected()
+          : VpnStatusError(message: e.message));
+    } catch (e) {
       _log.error('Connect unexpected error: $e');
-      _log.debug('Stack trace: $st');
       _setStatus(VpnStatusError(message: e.toString()));
     }
   }
@@ -201,20 +202,14 @@ class VpnService with WidgetsBindingObserver {
   /// call often; a no-op on platforms without the native handler.
   Future<void> cacheWidgetParams(
     String configJson, {
-    bool autoReconnect = false,
     bool killSwitch = false,
-    int reconnectMaxAttempts = 5,
-    int reconnectMaxBackoffS = 60,
     String splitTunnelMode = 'off',
     List<String> splitTunnelApps = const [],
   }) async {
     try {
       await _channel.invokeMethod('cacheWidgetParams', {
         'config': configJson,
-        'auto_reconnect': autoReconnect,
         'kill_switch': killSwitch,
-        'reconnect_max_attempts': reconnectMaxAttempts,
-        'reconnect_max_backoff_s': reconnectMaxBackoffS,
         'split_tunnel_mode': splitTunnelMode,
         'split_tunnel_apps': splitTunnelApps,
       });
@@ -262,10 +257,8 @@ class VpnService with WidgetsBindingObserver {
     }
   }
 
-  Future<String> getStatus() async {
-    final result = await _channel.invokeMethod<String>('status');
-    return result ?? 'unknown';
-  }
+  /// Native status: a structured map on Android, a legacy string on iOS.
+  Future<Object?> getStatus() => _channel.invokeMethod<Object>('status');
 
   void _startPolling() {
     _stopPolling();

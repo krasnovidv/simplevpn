@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"simplevpn/pkg/tlsdecoy"
+	"simplevpn/pkg/tunnel"
 )
 
 const testServerKey = "test-server-key-for-integration-tests-only"
@@ -78,6 +79,35 @@ func (ms *mockServer) handleConn(t *testing.T, conn net.Conn, behavior string) {
 	case "auth_fail":
 		fmt.Fprintf(conn, "DENY bad credentials\n")
 		return
+	case "drop":
+		// Authenticate, then lose the connection shortly after.
+		fmt.Fprintf(conn, "OK %s\n", testAssignedPrefix)
+		time.Sleep(100 * time.Millisecond)
+		return
+	case "echo":
+		// Authenticate, then answer liveness probes the way a real server's
+		// kernel answers ICMP echo on its tunnel address.
+		fmt.Fprintf(conn, "OK %s\n", testAssignedPrefix)
+		keys, err := tunnel.DeriveKeys(testServerKey)
+		if err != nil {
+			return
+		}
+		tun := tunnel.New(keys, conn)
+		for {
+			pkt, err := tun.Recv()
+			if err != nil {
+				return
+			}
+			if len(pkt) >= 28 && pkt[9] == 1 && pkt[20] == 8 {
+				reply := append([]byte(nil), pkt...)
+				copy(reply[12:16], pkt[16:20])
+				copy(reply[16:20], pkt[12:16])
+				reply[20] = 0
+				if tun.Send(reply) != nil {
+					return
+				}
+			}
+		}
 	default:
 		fmt.Fprintf(conn, "OK %s\n", testAssignedPrefix)
 		// Keep connection alive so RunTunnel can use it.

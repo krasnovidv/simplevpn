@@ -26,4 +26,16 @@ void main() {
     expect(friendlyVpnError('fatal', 'some weird thing'), 'ОШИБКА СОЕДИНЕНИЯ');
     expect(friendlyVpnError('transient', null), 'ОШИБКА СОЕДИНЕНИЯ');
   });
+
+  test('network failure during auth is not a credentials error', () {
+    expect(friendlyVpnError('transient', 'auth response: read tcp: i/o timeout'),
+        'СЕРВЕР НЕДОСТУПЕН');
+  });
+
+  test('stalled tunnel and kill switch have their own messages', () {
+    expect(friendlyVpnError('transient', 'tunnel stalled: no data from server'),
+        'СЕРВЕР ПЕРЕСТАЛ ОТВЕЧАТЬ');
+    expect(friendlyVpnError('transient', 'blocked (kill switch)'),
+        'ТРАФИК ЗАБЛОКИРОВАН (KILL SWITCH)');
+  });
 }

@@ -4,8 +4,12 @@
 String friendlyVpnError(String kind, String? message) {
   final m = (message ?? '').toLowerCase();
 
+  if (m.contains('kill switch')) return 'ТРАФИК ЗАБЛОКИРОВАН (KILL SWITCH)';
+
+  // Only an explicit rejection means bad credentials; "auth response: i/o
+  // timeout" is the network failing mid-handshake.
   if (kind == 'auth' ||
-      m.contains('auth') ||
+      m.contains('auth rejected') ||
       m.contains('credential') ||
       m.contains('unauthorized') ||
       m.contains('invalid password') ||
@@ -20,6 +24,12 @@ String friendlyVpnError(String kind, String? message) {
       m.contains('offline') ||
       m.contains('no internet')) {
     return 'НЕТ ПОДКЛЮЧЕНИЯ К СЕТИ';
+  }
+
+  if (m.contains('stalled')) return 'СЕРВЕР ПЕРЕСТАЛ ОТВЕЧАТЬ';
+
+  if (m.contains('x509') || m.contains('certificate')) {
+    return 'ОШИБКА СЕРТИФИКАТА СЕРВЕРА';
   }
 
   if (m.contains('timeout') ||

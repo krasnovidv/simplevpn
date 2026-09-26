@@ -22,6 +22,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,7 +44,7 @@ import (
 
 // Config is the JSON configuration passed from the mobile app.
 type Config struct {
-	Server      string `json:"server"`                // host:port
+	Server      string `json:"server"` // host:port
 	ServerKey   string `json:"server_key"`
 	Username    string `json:"username"`
 	Password    string `json:"password"`
@@ -151,12 +152,15 @@ const dialTimeout = 15 * time.Second
 // connection that comes up, together with the address that produced it. base is
 // mutated per attempt (ServerAddr/SNI), so it must not be shared across
 // concurrent dials. When every candidate fails the last error is returned — it
-// describes the most recently tried address.
-func dialWithFallback(dialer transport.Dialer, cfg *Config, base *transport.DialConfig, tag string) (net.Conn, string, error) {
+// describes the most recently tried address. Cancelling ctx stops the walk.
+func dialWithFallback(ctx context.Context, dialer transport.Dialer, cfg *Config, base *transport.DialConfig, tag string) (net.Conn, string, error) {
 	candidates := endpointCandidates(cfg)
 	var lastErr error
 
 	for i, addr := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, "", err
+		}
 		// SNI follows the address being dialled unless pinned explicitly, so a
 		// fallback endpoint on a different host still presents a coherent
 		// ClientHello.
@@ -173,8 +177,8 @@ func dialWithFallback(dialer transport.Dialer, cfg *Config, base *transport.Dial
 		}
 
 		log.Printf("[vpnlib] %s: dialing %s (candidate %d/%d, sni=%s)", tag, addr, i+1, len(candidates), sni)
-		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
-		conn, err := dialer.Dial(ctx, base)
+		dctx, cancel := context.WithTimeout(ctx, dialTimeout)
+		conn, err := dialer.Dial(dctx, base)
 		cancel()
 		if err == nil {
 			if i > 0 {
@@ -293,22 +297,41 @@ func (k errKind) String() string {
 	}
 }
 
-// state holds the current connection state.
+// state holds the current connection state. Every field is guarded by mu.
+//
+// Lifecycle: Preflight (dial + auth) → pending → RunTunnel (relay) → idle.
+// Disconnect may arrive in any of those phases and must end the session
+// cleanly in each of them: it cancels an in-flight dial, drops a pending
+// authenticated conn, or tears down the relay. A session ended by Disconnect
+// is never reported as an error — the user asked for it.
 type state struct {
 	mu             sync.Mutex
 	connected      bool
 	conn           net.Conn
 	tunFile        *os.File
-	stopCh         chan struct{}
+	stopCh         chan struct{} // closed by Disconnect; tells the relay the stop was deliberate
+	cancelDial     context.CancelFunc
 	status         string
 	assignedPrefix netip.Prefix // IP assigned by server, e.g. "10.0.0.2/24"
 	lastKind       errKind      // most recent error classification (see errKind)
 
 	// Pending preflight state — valid between Preflight() and RunTunnel() calls.
-	pendingBC         *bufConn     // authenticated + bufio-wrapped connection
+	pendingBC         *bufConn // authenticated + bufio-wrapped connection
 	pendingKeys       *tunnel.Keys
-	preflightCh       chan struct{} // closed by RunTunnel to cancel watchdog
-	connectUnlockOnce *sync.Once   // ensures connectMu.Unlock is called exactly once
+	preflightCh       chan struct{} // closed by RunTunnel/Disconnect to cancel the watchdog
+	connectUnlockOnce *sync.Once    // ensures connectMu.Unlock is called exactly once
+}
+
+// signalStopLocked closes stopCh at most once. Caller holds s.mu.
+func (s *state) signalStopLocked() {
+	if s.stopCh == nil {
+		return
+	}
+	select {
+	case <-s.stopCh:
+	default:
+		close(s.stopCh)
+	}
 }
 
 // AssignedPrefix returns the IP prefix assigned by the server for this session.
@@ -335,8 +358,8 @@ func (bc *bufConn) Read(p []byte) (int, error) { return bc.r.Read(p) }
 
 var current = &state{status: "disconnected"}
 
-// connectMu is held from Preflight() until RunTunnel() returns (or the watchdog fires).
-// This prevents concurrent connection attempts.
+// connectMu is held from Preflight() until RunTunnel() returns (or the watchdog
+// fires, or Disconnect drops the pending session). It serialises sessions.
 var connectMu sync.Mutex
 
 // defaultTransport returns the default transport type for the current platform.
@@ -352,111 +375,67 @@ func defaultFingerprint() transport.FingerprintProfile {
 	return transport.FingerprintChrome
 }
 
-// Connect establishes a VPN connection.
-//   - configJSON: JSON string with server, server_key, username, password, sni, transport, fingerprint fields
-//   - fd: TUN device file descriptor (from platform VPN service)
-//
-// This function blocks until the connection is closed or Disconnect() is called.
+// Connect establishes a VPN connection on an already configured TUN fd and
+// blocks until it ends. Kept for API compatibility: it is Preflight followed by
+// RunTunnel, which is what the platforms use directly (they need the assigned
+// address before they can build the TUN).
 func Connect(configJSON string, fd int) error {
-	// [FIX] Prevent concurrent Connect() calls from racing
-	connectMu.Lock()
-	defer connectMu.Unlock()
-	log.Printf("[FIX] Connect mutex acquired")
-
-	resetLastKind()
-	atomic.StoreInt64(&statsBytesIn, 0)
-	atomic.StoreInt64(&statsBytesOut, 0)
-	atomic.StoreInt64(&statsConnectedAt, time.Now().UnixMilli())
-
-	current.mu.Lock()
-	if current.connected {
-		current.mu.Unlock()
-		log.Printf("[FIX] Connect called but already connected — skipping")
-		return fmt.Errorf("already connected")
+	res := Preflight(configJSON)
+	if strings.HasPrefix(res, "error:") {
+		return fmt.Errorf("%s", strings.TrimSpace(strings.TrimPrefix(res, "error:")))
 	}
-	current.status = "connecting"
-	current.stopCh = make(chan struct{})
-	current.mu.Unlock()
+	return RunTunnel(fd)
+}
 
-	log.Printf("[vpnlib] Connect called, config length=%d, fd=%d", len(configJSON), fd)
+// sessionErr carries an establish() failure together with its retry class and a
+// short source tag for the errKind log line.
+type sessionErr struct {
+	kind errKind
+	src  string
+	err  error
+}
+
+func (e *sessionErr) Error() string { return e.err.Error() }
+
+func fail(kind errKind, src string, format string, args ...any) *sessionErr {
+	return &sessionErr{kind: kind, src: src, err: fmt.Errorf(format, args...)}
+}
+
+// establish parses the config, dials the first reachable endpoint and
+// authenticates. On success the returned conn is positioned at the first tunnel
+// frame. Cancelling ctx aborts the dial and the auth exchange.
+func establish(ctx context.Context, configJSON string) (*bufConn, *tunnel.Keys, netip.Prefix, *sessionErr) {
+	var none netip.Prefix
 
 	var cfg Config
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		log.Printf("[vpnlib] ERROR: failed to parse config JSON: %v", err)
-		setLastKind(kindFatal, "config-parse", err)
-		setStatus("error: bad config: " + err.Error())
-		return fmt.Errorf("parse config: %w", err)
+		return nil, nil, none, fail(kindFatal, "config-parse", "bad config: %w", err)
 	}
-
-	// Log config (mask sensitive fields)
-	keyPreview := cfg.ServerKey
-	if len(keyPreview) > 4 {
-		keyPreview = keyPreview[:4] + "..."
-	}
-	log.Printf("[vpnlib] Config: server=%s, sni=%s, skipVerify=%v, server_key=%s, user=%s, transport=%s, fingerprint=%s",
-		cfg.Server, cfg.SNI, cfg.SkipVerify, keyPreview, cfg.Username, cfg.Transport, cfg.Fingerprint)
-
 	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
-		log.Printf("[vpnlib] ERROR: server, server_key, username, and password are all required")
-		setLastKind(kindFatal, "config-validate", nil)
-		setStatus("error: server, server_key, username, and password are required")
-		return fmt.Errorf("server, server_key, username, and password are required")
+		return nil, nil, none, fail(kindFatal, "config-validate", "server, server_key, username, and password are required")
 	}
 
-	// Derive keys
-	log.Printf("[vpnlib] Deriving keys from server key...")
 	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: derive keys: %v", err)
-		setLastKind(kindFatal, "derive-keys", err)
-		setStatus("error: derive keys: " + err.Error())
-		return fmt.Errorf("derive keys: %w", err)
+		return nil, nil, none, fail(kindFatal, "derive-keys", "derive keys: %w", err)
 	}
-	log.Printf("[vpnlib] Keys derived OK")
 
-	// TUN file from fd
-	log.Printf("[vpnlib] Opening TUN fd=%d", fd)
-	tunFile := os.NewFile(uintptr(fd), "tun")
-	if tunFile == nil {
-		log.Printf("[vpnlib] ERROR: os.NewFile returned nil for fd=%d", fd)
-		setLastKind(kindFatal, "tun-fd", nil)
-		setStatus("error: invalid tun fd")
-		return fmt.Errorf("invalid tun fd: %d", fd)
-	}
-	log.Printf("[vpnlib] TUN file opened OK")
-
-	// SNI is resolved per candidate endpoint inside dialWithFallback, since a
-	// fallback address may live on a different host than the primary.
-
-	// Resolve transport settings with defaults
 	tt := transport.Type(cfg.Transport)
 	if tt == "" {
 		tt = defaultTransport()
-		log.Printf("[vpnlib] Transport not set, using default: %s", tt)
 	}
 	fp := transport.FingerprintProfile(cfg.Fingerprint)
 	if fp == "" {
 		fp = defaultFingerprint()
-		log.Printf("[vpnlib] Fingerprint not set, using default: %s", fp)
 	}
-
-	// Create transport dialer
-	log.Printf("[vpnlib] Step 1/4: Creating transport (type=%s, fingerprint=%s) ...", tt, fp)
-	setStatus("connecting")
-
 	dialer, err := transport.NewDialer(tt, fp)
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: create transport dialer: %v", err)
-		setLastKind(kindFatal, "transport-create", err)
-		setStatus("error: transport: " + err.Error())
-		return fmt.Errorf("create transport: %w", err)
+		return nil, nil, none, fail(kindFatal, "transport-create", "transport: %w", err)
 	}
 
-	// Build dial config. ServerAddr/SNI are filled in per attempt by
-	// dialWithFallback.
-	dialCfg := &transport.DialConfig{
-		Fingerprint: fp,
-	}
+	// ServerAddr/SNI are filled in per attempt by dialWithFallback, since a
+	// fallback address may live on a different host than the primary.
+	dialCfg := &transport.DialConfig{Fingerprint: fp}
 	if cfg.SkipVerify {
 		dialCfg.TLSConfig = &tls.Config{
 			InsecureSkipVerify: true,
@@ -464,25 +443,18 @@ func Connect(configJSON string, fd int) error {
 			NextProtos:         []string{"http/1.1"},
 		}
 	}
-
-	// Socket protection for Android VPN
-	if protector != nil {
+	if p := protector; p != nil {
 		dialCfg.DialControl = func(network, address string, c interface{}) error {
 			rawConn, ok := c.(syscall.RawConn)
 			if !ok {
-				log.Printf("[vpnlib] WARNING: DialControl received non-RawConn type: %T", c)
 				return nil
 			}
 			var protectErr error
-			err := rawConn.Control(func(fd uintptr) {
-				log.Printf("[vpnlib] Protecting socket fd=%d from VPN routing", fd)
-				if !protector.ProtectSocket(int32(fd)) {
+			if err := rawConn.Control(func(fd uintptr) {
+				if !p.ProtectSocket(int32(fd)) {
 					protectErr = fmt.Errorf("protect socket fd=%d failed", fd)
-				} else {
-					log.Printf("[vpnlib] Socket fd=%d protected OK", fd)
 				}
-			})
-			if err != nil {
+			}); err != nil {
 				return fmt.Errorf("raw conn control: %w", err)
 			}
 			return protectErr
@@ -491,174 +463,52 @@ func Connect(configJSON string, fd int) error {
 		log.Printf("[vpnlib] WARNING: no socket protector set, VPN routing loop may occur")
 	}
 
-	// Dial via transport, walking the fallback endpoints when the primary is dead.
-	log.Printf("[vpnlib] Step 2/4: Connecting via %s transport ...", tt)
+	log.Printf("[vpnlib] Connecting: server=%s endpoints=%d transport=%s fingerprint=%s user=%s",
+		cfg.Server, len(cfg.Endpoints), tt, fp, cfg.Username)
 
-	conn, dialedAddr, err := dialWithFallback(dialer, &cfg, dialCfg, "Connect")
+	conn, dialedAddr, err := dialWithFallback(ctx, dialer, &cfg, dialCfg, "Preflight")
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: transport dial failed on all endpoints: %v", err)
-		setLastKind(classifyDialErr(err), "dial", err)
-		setStatus("error: connect: " + err.Error())
-		return fmt.Errorf("transport dial: %w", err)
+		return nil, nil, none, fail(classifyDialErr(err), "dial", "connect: %w", err)
 	}
 	setActiveServer(dialedAddr)
-	log.Printf("[vpnlib] Transport connected to %s", dialedAddr)
 
-	// Authenticate with credentials
-	log.Printf("[vpnlib] Step 3/4: Sending credentials for user %q ...", cfg.Username)
+	// Disconnect during the auth exchange closes the conn, which unblocks the
+	// read below; stop() detaches that hook once auth is done.
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
+
 	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: generate credential frame: %v", err)
 		conn.Close()
-		setLastKind(kindFatal, "auth-gen", err)
-		setStatus("error: auth gen: " + err.Error())
-		return fmt.Errorf("generate credentials: %w", err)
+		return nil, nil, none, fail(kindFatal, "auth-gen", "auth gen: %w", err)
 	}
-	log.Printf("[vpnlib] Credential frame generated, length=%d bytes", len(credFrame))
-
 	if _, err := conn.Write(credFrame); err != nil {
-		log.Printf("[vpnlib] ERROR: send credentials: %v", err)
 		conn.Close()
-		setLastKind(kindTransient, "auth-send", err)
-		setStatus("error: auth send: " + err.Error())
-		return fmt.Errorf("send credentials: %w", err)
+		return nil, nil, none, fail(kindTransient, "auth-send", "auth send: %w", err)
 	}
-	log.Printf("[vpnlib] Credentials sent, waiting for server response (10s timeout) ...")
 
-	// Read auth response line: "OK <ip>/<prefix>\n"
-	// Use bufio so we can read up to '\n' precisely; wrap conn in bufConn
-	// afterwards so any pre-buffered bytes are not lost when tunnel.New reads.
+	// Read auth response line: "OK <ip>/<prefix>\n". bufConn keeps whatever the
+	// reader buffered past '\n' so the first tunnel frame is not lost.
 	br := bufio.NewReader(conn)
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	line, err := br.ReadString('\n')
 	conn.SetReadDeadline(time.Time{})
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: reading auth response line: %v", err)
 		conn.Close()
-		setLastKind(kindTransient, "auth-response", err)
-		setStatus("error: auth response: " + err.Error())
-		return fmt.Errorf("auth response: %w", err)
+		return nil, nil, none, fail(kindTransient, "auth-response", "auth response: %w", err)
 	}
-
 	line = strings.TrimSpace(line)
-	log.Printf("[vpnlib] Auth response received: %q", line)
-
 	if !strings.HasPrefix(line, "OK ") {
-		log.Printf("[vpnlib] ERROR: auth rejected (response=%q)", line)
 		conn.Close()
-		setLastKind(kindAuth, "auth-rejected", nil)
-		setStatus("error: auth rejected")
-		return fmt.Errorf("auth rejected: %s", line)
+		return nil, nil, none, fail(kindAuth, "auth-rejected", "auth rejected: %s", line)
 	}
-
-	assignedPrefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
+	assigned, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
 	if err != nil {
-		log.Printf("[vpnlib] ERROR: parse assigned prefix %q: %v", line, err)
 		conn.Close()
-		setLastKind(kindFatal, "assigned-prefix", err)
-		setStatus("error: bad assigned prefix")
-		return fmt.Errorf("parse assigned prefix: %w", err)
+		return nil, nil, none, fail(kindFatal, "assigned-prefix", "bad assigned prefix: %w", err)
 	}
-	log.Printf("[vpnlib] Step 4/4: Authenticated OK, assigned=%s (transport=%s, fingerprint=%s)", assignedPrefix, tt, fp)
-
-	// Store connection state and assigned IP.
-	current.mu.Lock()
-	current.connected = true
-	current.conn = conn
-	current.tunFile = tunFile
-	current.status = "connected"
-	current.assignedPrefix = assignedPrefix
-	stopCh := current.stopCh
-	current.mu.Unlock()
-
-	log.Printf("[vpnlib] Tunnel active, starting data relay goroutines")
-
-	// Wrap conn in bufConn so buffered bytes past '\n' are not lost.
-	bc := &bufConn{r: br, Conn: conn}
-
-	// Create tunnel
-	tun := tunnel.New(keys, bc)
-
-	// TUN → Transport (send)
-	// [FIX] tunReaderDone signals when the goroutine exits, so cleanup waits for it
-	tunReaderDone := make(chan struct{})
-	go func() {
-		defer close(tunReaderDone)
-		// [FIX] Panic recovery — prevent native crash from killing the Go runtime
-		defer func() {
-			if r := recover(); r != nil {
-				log.Printf("[FIX] Panic in TUN→Transport goroutine: %v", r)
-				setLastKind(kindFatal, "tun-reader-panic", nil)
-				setStatus("error: tun reader panic")
-			}
-		}()
-
-		buf := make([]byte, tunnel.MaxFrameSize)
-		var sendCount int64
-		log.Printf("[vpnlib] TUN→Transport goroutine started, reading from TUN fd=%d", fd)
-		for {
-			select {
-			case <-stopCh:
-				log.Printf("[vpnlib] TUN→Transport goroutine stopping (stop signal), sent %d packets", sendCount)
-				return
-			default:
-			}
-
-			n, err := tunFile.Read(buf)
-			if err != nil {
-				log.Printf("[vpnlib] TUN read error (after %d packets): %v", sendCount, err)
-				return
-			}
-
-			if sendCount < 5 {
-				log.Printf("[vpnlib] TUN read: %d bytes (packet #%d, first byte=0x%02x)", n, sendCount+1, buf[0])
-			} else if sendCount == 5 {
-				log.Printf("[vpnlib] TUN reads working, suppressing per-packet logs")
-			}
-
-			if err := tun.Send(buf[:n]); err != nil {
-				log.Printf("[vpnlib] Send error (after %d packets): %v", sendCount, err)
-				return
-			}
-			atomic.AddInt64(&statsBytesOut, int64(n))
-			sendCount++
-			if sendCount%1000 == 0 {
-				log.Printf("[vpnlib] TUN→Transport stats: sent %d packets", sendCount)
-			}
-		}
-	}()
-
-	// Transport → TUN (receive) — blocks until disconnect
-	var recvCount int64
-	log.Printf("[vpnlib] Transport→TUN receive loop started, writing to TUN fd=%d", fd)
-	for {
-		select {
-		case <-stopCh:
-			log.Printf("[vpnlib] Transport→TUN loop stopping (stop signal), received %d packets", recvCount)
-			cleanup(conn, tunFile)
-			return nil
-		default:
-		}
-
-		plaintext, err := tun.Recv()
-		if err != nil {
-			log.Printf("[vpnlib] Recv error (after %d packets): %v", recvCount, err)
-			cleanup(conn, tunFile)
-			setLastKind(kindTransient, "recv", err)
-			setStatus("error: recv: " + err.Error())
-			return err
-		}
-
-		if _, err := tunFile.Write(plaintext); err != nil {
-			log.Printf("[vpnlib] TUN write error (after %d packets): %v", recvCount, err)
-			cleanup(conn, tunFile)
-			setLastKind(kindTransient, "tun-write", err)
-			setStatus("error: tun write: " + err.Error())
-			return err
-		}
-		atomic.AddInt64(&statsBytesIn, int64(len(plaintext)))
-		recvCount++
-	}
+	log.Printf("[vpnlib] Authenticated via %s, assigned=%s", dialedAddr, assigned)
+	return &bufConn{r: br, Conn: conn}, keys, assigned, nil
 }
 
 // Preflight authenticates with the VPN server and returns the assigned IP prefix
@@ -666,170 +516,63 @@ func Connect(configJSON string, fd int) error {
 // and then call RunTunnel(fd) within 10 seconds.
 //
 // Returns "error: <message>" on failure. Returns the assigned prefix on success.
+// A Disconnect() while Preflight runs aborts it with "error: cancelled" and
+// leaves LastErrorKind at "none".
 //
 // Lifecycle guarantee: holds connectMu after returning successfully.
-// Either RunTunnel or a 10-second watchdog will release it.
+// RunTunnel, Disconnect or a 10-second watchdog will release it.
 func Preflight(configJSON string) string {
 	connectMu.Lock()
-	log.Printf("[vpnlib] Preflight: connectMu acquired")
+	unlockOnce := &sync.Once{}
+	release := func() { unlockOnce.Do(connectMu.Unlock) }
 
 	resetLastKind()
 	atomic.StoreInt64(&statsBytesIn, 0)
 	atomic.StoreInt64(&statsBytesOut, 0)
 	atomic.StoreInt64(&statsConnectedAt, time.Now().UnixMilli())
 
-	unlockOnce := &sync.Once{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	current.mu.Lock()
 	if current.connected {
 		current.mu.Unlock()
-		unlockOnce.Do(connectMu.Unlock)
+		release()
 		return "error: already connected"
 	}
 	current.status = "connecting"
 	current.stopCh = make(chan struct{})
+	current.cancelDial = cancel
 	current.mu.Unlock()
 
-	log.Printf("[vpnlib] Preflight: config len=%d", len(configJSON))
-
-	var cfg Config
-	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
-		setLastKind(kindFatal, "config-parse", err)
-		setStatus("error: bad config: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: bad config: " + err.Error()
-	}
-
-	if cfg.Server == "" || cfg.ServerKey == "" || cfg.Username == "" || cfg.Password == "" {
-		setLastKind(kindFatal, "config-validate", nil)
-		setStatus("error: missing required fields")
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: server, server_key, username, and password are required"
-	}
-
-	keys, err := tunnel.DeriveKeys(cfg.ServerKey)
-	if err != nil {
-		setLastKind(kindFatal, "derive-keys", err)
-		setStatus("error: derive keys: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: derive keys: " + err.Error()
-	}
-
-	// SNI is resolved per candidate endpoint inside dialWithFallback.
-	tt := transport.Type(cfg.Transport)
-	if tt == "" {
-		tt = defaultTransport()
-	}
-	fp := transport.FingerprintProfile(cfg.Fingerprint)
-	if fp == "" {
-		fp = defaultFingerprint()
-	}
-
-	dialer, err := transport.NewDialer(tt, fp)
-	if err != nil {
-		setLastKind(kindFatal, "transport-create", err)
-		setStatus("error: transport: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: transport: " + err.Error()
-	}
-
-	// ServerAddr/SNI are filled in per attempt by dialWithFallback.
-	dialCfg := &transport.DialConfig{
-		Fingerprint: fp,
-	}
-	if cfg.SkipVerify {
-		dialCfg.TLSConfig = &tls.Config{
-			InsecureSkipVerify: true,
-			MinVersion:         tls.VersionTLS13,
-			NextProtos:         []string{"http/1.1"},
-		}
-	}
-	if protector != nil {
-		dialCfg.DialControl = func(network, address string, c interface{}) error {
-			rawConn, ok := c.(syscall.RawConn)
-			if !ok {
-				return nil
-			}
-			var protectErr error
-			rawConn.Control(func(fd uintptr) { //nolint:errcheck
-				if !protector.ProtectSocket(int32(fd)) {
-					protectErr = fmt.Errorf("protect socket fd=%d failed", fd)
-				}
-			})
-			return protectErr
-		}
-	} else {
-		log.Printf("[vpnlib] WARNING: no socket protector set in Preflight")
-	}
-
-	log.Printf("[vpnlib] Preflight: dialing via %s", tt)
-
-	conn, dialedAddr, err := dialWithFallback(dialer, &cfg, dialCfg, "Preflight")
-	if err != nil {
-		setLastKind(classifyDialErr(err), "dial", err)
-		setStatus("error: connect: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: connect: " + err.Error()
-	}
-	setActiveServer(dialedAddr)
-	log.Printf("[vpnlib] Preflight: connected to %s, authenticating", dialedAddr)
-
-	credFrame, err := tlsdecoy.GenerateCredAuth(cfg.Username, cfg.Password)
-	if err != nil {
-		conn.Close()
-		setLastKind(kindFatal, "auth-gen", err)
-		setStatus("error: auth gen: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: auth gen: " + err.Error()
-	}
-	if _, err := conn.Write(credFrame); err != nil {
-		conn.Close()
-		setLastKind(kindTransient, "auth-send", err)
-		setStatus("error: auth send: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: auth send: " + err.Error()
-	}
-
-	br := bufio.NewReader(conn)
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := br.ReadString('\n')
-	conn.SetReadDeadline(time.Time{})
-	if err != nil {
-		conn.Close()
-		setLastKind(kindTransient, "auth-response", err)
-		setStatus("error: auth response: " + err.Error())
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: auth response: " + err.Error()
-	}
-
-	line = strings.TrimSpace(line)
-	log.Printf("[vpnlib] Preflight: auth response=%q", line)
-
-	if !strings.HasPrefix(line, "OK ") {
-		conn.Close()
-		setLastKind(kindAuth, "auth-rejected", nil)
-		setStatus("error: auth rejected")
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: auth rejected: " + line
-	}
-
-	assignedPrefix, err := netip.ParsePrefix(strings.TrimPrefix(line, "OK "))
-	if err != nil {
-		conn.Close()
-		setLastKind(kindFatal, "assigned-prefix", err)
-		setStatus("error: bad assigned prefix")
-		unlockOnce.Do(connectMu.Unlock)
-		return "error: bad assigned prefix: " + err.Error()
-	}
-	log.Printf("[vpnlib] Preflight: assigned=%s", assignedPrefix)
-
-	bc := &bufConn{r: br, Conn: conn}
-	preflightCh := make(chan struct{})
+	bc, keys, assigned, serr := establish(ctx, configJSON)
 
 	current.mu.Lock()
+	current.cancelDial = nil
+	cancelled := ctx.Err() != nil
+	if cancelled {
+		// Disconnect already reset status/lastKind; don't overwrite them with
+		// the error the aborted dial produced.
+		current.mu.Unlock()
+		if bc != nil {
+			bc.Close()
+		}
+		release()
+		log.Printf("[vpnlib] Preflight cancelled by Disconnect")
+		return "error: cancelled"
+	}
+	if serr != nil {
+		current.mu.Unlock()
+		setLastKind(serr.kind, serr.src, serr.err)
+		setStatus("error: " + serr.Error())
+		release()
+		return "error: " + serr.Error()
+	}
+
+	preflightCh := make(chan struct{})
 	current.pendingBC = bc
 	current.pendingKeys = keys
-	current.assignedPrefix = assignedPrefix
+	current.assignedPrefix = assigned
 	current.preflightCh = preflightCh
 	current.connectUnlockOnce = unlockOnce
 	current.mu.Unlock()
@@ -838,37 +581,43 @@ func Preflight(configJSON string) string {
 	go func() {
 		select {
 		case <-preflightCh:
-			log.Printf("[vpnlib] Preflight watchdog: cancelled by RunTunnel")
 		case <-time.After(10 * time.Second):
 			log.Printf("[vpnlib] Preflight watchdog: RunTunnel not called, closing conn")
 			current.mu.Lock()
-			if current.pendingBC != nil {
-				current.pendingBC.Close()
+			if current.pendingBC == bc {
+				bc.Close()
 				current.pendingBC = nil
 				current.pendingKeys = nil
+				current.preflightCh = nil
+				current.status = "disconnected"
 			}
-			current.status = "disconnected"
 			current.mu.Unlock()
-			unlockOnce.Do(connectMu.Unlock)
+			release()
 		}
 	}()
 
-	return assignedPrefix.String()
+	return assigned.String()
 }
 
 // RunTunnel starts the VPN data relay using the given TUN file descriptor.
 // Must be called within 10 seconds of a successful Preflight() call.
-// Blocks until the tunnel closes or Disconnect() is called.
+// Blocks until the tunnel closes or Disconnect() is called; returns nil for a
+// Disconnect and the cause otherwise.
 func RunTunnel(fd int) error {
 	current.mu.Lock()
 	bc := current.pendingBC
 	keys := current.pendingKeys
 	stopCh := current.stopCh
 	unlockOnce := current.connectUnlockOnce
+	assigned := current.assignedPrefix
 
 	if bc == nil || keys == nil || unlockOnce == nil {
 		current.mu.Unlock()
-		return fmt.Errorf("RunTunnel called without a pending Preflight, or watchdog expired")
+		// The fd was handed over to us; don't leak it.
+		if f := os.NewFile(uintptr(fd), "tun"); f != nil {
+			f.Close()
+		}
+		return fmt.Errorf("RunTunnel called without a pending Preflight, or it was cancelled")
 	}
 
 	// Cancel the watchdog — we own the connection now.
@@ -881,122 +630,308 @@ func RunTunnel(fd int) error {
 	// connectMu is released when RunTunnel returns (tunnel closes or Disconnect called).
 	defer unlockOnce.Do(connectMu.Unlock)
 
-	log.Printf("[vpnlib] RunTunnel: fd=%d assigned=%s", fd, current.assignedPrefix)
-
+	// A pollable (non-blocking) fd lets Close() interrupt a Read parked on an
+	// idle TUN; with a blocking fd the reader goroutine would sit in read(2)
+	// until the next packet and keep the interface alive after teardown.
+	if err := setNonblock(fd); err != nil {
+		log.Printf("[vpnlib] RunTunnel: set non-blocking on fd=%d failed: %v", fd, err)
+	}
 	tunFile := os.NewFile(uintptr(fd), "tun")
 	if tunFile == nil {
+		bc.Close()
 		setLastKind(kindFatal, "tun-fd", nil)
 		setStatus("error: invalid tun fd")
 		return fmt.Errorf("invalid tun fd: %d", fd)
 	}
 
 	current.mu.Lock()
+	select {
+	case <-stopCh:
+		// Disconnect raced in between Preflight and here.
+		current.mu.Unlock()
+		bc.Close()
+		tunFile.Close()
+		return nil
+	default:
+	}
 	current.connected = true
 	current.conn = bc
 	current.tunFile = tunFile
 	current.status = "connected"
 	current.mu.Unlock()
 
-	log.Printf("[vpnlib] RunTunnel: tunnel active, starting relay goroutines")
+	log.Printf("[vpnlib] RunTunnel: fd=%d assigned=%s, relay started", fd, assigned)
+	err := relay(tunnel.New(keys, bc), bc, tunFile, assigned.Addr(), gatewayFor(assigned))
 
-	tun := tunnel.New(keys, bc)
+	current.mu.Lock()
+	current.connected = false
+	current.conn = nil
+	current.tunFile = nil
+	deliberate := false
+	select {
+	case <-stopCh:
+		deliberate = true
+	default:
+	}
+	if deliberate {
+		current.status = "disconnected"
+	}
+	current.mu.Unlock()
+	setActiveServer("")
 
-	tunReaderDone := make(chan struct{})
+	if deliberate {
+		log.Printf("[vpnlib] RunTunnel: stopped by Disconnect")
+		return nil
+	}
+	log.Printf("[vpnlib] RunTunnel: tunnel lost: %v", err)
+	setLastKind(kindTransient, "relay", err)
+	setStatus("error: " + err.Error())
+	return err
+}
+
+// Liveness probing. The protocol has no ping frame, but every server answers
+// ICMP echo on its own tunnel address, so a probe sent through the tunnel tests
+// the whole path (TCP flow, TLS, server relay) with no server change. Without
+// it a flow that a middlebox silently stopped forwarding — a routine DPI
+// tactic — looks "connected" until TCP gives up, which takes up to ~15 min.
+// Variables rather than constants only so tests can shorten them.
+var (
+	probeInterval = 25 * time.Second // probe once the tunnel has been quiet this long
+	stallTimeout  = 70 * time.Second // nothing received for this long ⇒ path is dead
+)
+
+var errStalled = errors.New("tunnel stalled: no data from server")
+
+// relay pumps packets both ways until either side fails or the conn/TUN is
+// closed from outside (Disconnect). Whichever direction fails first tears the
+// other down, so the call never outlives a half-dead tunnel.
+func relay(tun *tunnel.Tunnel, conn net.Conn, tunFile *os.File, local, gateway netip.Addr) error {
+	var (
+		once    sync.Once
+		cause   error
+		lastRx  atomic.Int64 // unix nanos of the last frame from the server
+		gotRx   atomic.Bool
+		probeOK atomic.Bool // the server answered a probe this session
+	)
+	teardown := func(err error) {
+		once.Do(func() {
+			cause = err
+			conn.Close()
+			tunFile.Close()
+		})
+	}
+	lastRx.Store(time.Now().UnixNano())
+	probeID := uint16(time.Now().UnixNano())
+
+	// TUN → server.
+	senderDone := make(chan struct{})
 	go func() {
-		defer close(tunReaderDone)
+		defer close(senderDone)
 		defer func() {
 			if r := recover(); r != nil {
-				log.Printf("[FIX] Panic in TUN→Transport goroutine (RunTunnel): %v", r)
-				setLastKind(kindFatal, "tun-reader-panic", nil)
-				setStatus("error: tun reader panic")
+				log.Printf("[vpnlib] panic in TUN reader: %v", r)
+				teardown(fmt.Errorf("tun reader panic: %v", r))
 			}
 		}()
 		buf := make([]byte, tunnel.MaxFrameSize)
-		var count int64
 		for {
-			select {
-			case <-stopCh:
-				log.Printf("[vpnlib] RunTunnel TUN→Transport stopping (sent %d pkts)", count)
-				return
-			default:
-			}
 			n, err := tunFile.Read(buf)
 			if err != nil {
-				log.Printf("[vpnlib] RunTunnel TUN read error: %v", err)
+				teardown(fmt.Errorf("tun read: %w", err))
 				return
 			}
+			// The server routes IPv4 only. The platform captures IPv6 too so
+			// it cannot leak around the tunnel; it ends here.
+			if n == 0 || buf[0]>>4 != 4 {
+				continue
+			}
 			if err := tun.Send(buf[:n]); err != nil {
-				log.Printf("[vpnlib] RunTunnel Send error: %v", err)
+				teardown(fmt.Errorf("send: %w", err))
 				return
 			}
 			atomic.AddInt64(&statsBytesOut, int64(n))
-			count++
 		}
 	}()
 
-	var recvCount int64
-	for {
-		select {
-		case <-stopCh:
-			log.Printf("[vpnlib] RunTunnel recv loop stopping (received %d pkts)", recvCount)
-			cleanup(bc, tunFile)
-			return nil
-		default:
-		}
-
-		plaintext, err := tun.Recv()
-		if err != nil {
-			log.Printf("[vpnlib] RunTunnel Recv error (after %d pkts): %v", recvCount, err)
-			cleanup(bc, tunFile)
-			setLastKind(kindTransient, "recv", err)
-			setStatus("error: recv: " + err.Error())
-			return err
-		}
-
-		if _, err := tunFile.Write(plaintext); err != nil {
-			log.Printf("[vpnlib] RunTunnel TUN write error: %v", err)
-			cleanup(bc, tunFile)
-			setLastKind(kindTransient, "tun-write", err)
-			setStatus("error: tun write: " + err.Error())
-			return err
-		}
-		atomic.AddInt64(&statsBytesIn, int64(len(plaintext)))
-		recvCount++
+	// Liveness watchdog.
+	watchDone := make(chan struct{})
+	defer close(watchDone)
+	if gateway.IsValid() && local.Is4() {
+		go func() {
+			t := time.NewTicker(probeInterval)
+			defer t.Stop()
+			var seq uint16
+			for {
+				select {
+				case <-watchDone:
+					return
+				case <-t.C:
+				}
+				idle := time.Since(time.Unix(0, lastRx.Load()))
+				// Only trust silence once probes are known to work here, or when
+				// the session has never delivered a byte — otherwise a server
+				// with an unusual tunnel address would be dropped every minute.
+				if idle >= stallTimeout && (probeOK.Load() || !gotRx.Load()) {
+					log.Printf("[vpnlib] liveness: nothing received for %s, dropping tunnel", idle.Round(time.Second))
+					teardown(errStalled)
+					return
+				}
+				if idle >= probeInterval {
+					seq++
+					if err := tun.Send(icmpEcho(local, gateway, probeID, seq)); err != nil {
+						teardown(fmt.Errorf("send probe: %w", err))
+						return
+					}
+				}
+			}
+		}()
 	}
+
+	// Server → TUN.
+	for {
+		pkt, err := tun.Recv()
+		if err != nil {
+			teardown(fmt.Errorf("recv: %w", err))
+			break
+		}
+		lastRx.Store(time.Now().UnixNano())
+		gotRx.Store(true)
+		if isEchoReply(pkt, gateway, probeID) {
+			probeOK.Store(true)
+			continue
+		}
+		if _, err := tunFile.Write(pkt); err != nil {
+			teardown(fmt.Errorf("tun write: %w", err))
+			break
+		}
+		atomic.AddInt64(&statsBytesIn, int64(len(pkt)))
+	}
+
+	select {
+	case <-senderDone:
+	case <-time.After(2 * time.Second):
+		log.Printf("[vpnlib] TUN reader did not exit within 2s (blocking fd?)")
+	}
+	return cause
 }
 
-// Disconnect closes the VPN connection.
+// gatewayFor returns the server's tunnel address for an assigned prefix: the
+// first host of the subnet, which is where the server puts its own TUN.
+func gatewayFor(p netip.Prefix) netip.Addr {
+	if !p.IsValid() || !p.Addr().Is4() || p.Bits() > 30 {
+		return netip.Addr{}
+	}
+	gw := p.Masked().Addr().Next()
+	if gw == p.Addr() {
+		return netip.Addr{}
+	}
+	return gw
+}
+
+// icmpEcho builds an IPv4 ICMP echo request from src to dst.
+func icmpEcho(src, dst netip.Addr, id, seq uint16) []byte {
+	const ipLen, icmpLen = 20, 16
+	p := make([]byte, ipLen+icmpLen)
+	p[0] = 0x45                  // IPv4, 20-byte header
+	putU16(p[2:], ipLen+icmpLen) // total length
+	putU16(p[4:], seq)           // identification
+	p[8] = 64                    // TTL
+	p[9] = 1                     // ICMP
+	s, d := src.As4(), dst.As4()
+	copy(p[12:16], s[:])
+	copy(p[16:20], d[:])
+	putU16(p[10:], checksum(p[:ipLen]))
+
+	icmp := p[ipLen:]
+	icmp[0] = 8 // echo request
+	putU16(icmp[4:], id)
+	putU16(icmp[6:], seq)
+	putU16(icmp[2:], checksum(icmp))
+	return p
+}
+
+// isEchoReply reports whether pkt is the answer to one of our probes.
+func isEchoReply(pkt []byte, gateway netip.Addr, id uint16) bool {
+	if len(pkt) < 28 || pkt[0]>>4 != 4 || pkt[9] != 1 {
+		return false
+	}
+	ihl := int(pkt[0]&0x0f) * 4
+	if ihl < 20 || len(pkt) < ihl+8 {
+		return false
+	}
+	if netip.AddrFrom4([4]byte(pkt[12:16])) != gateway {
+		return false
+	}
+	icmp := pkt[ihl:]
+	return icmp[0] == 0 && uint16(icmp[4])<<8|uint16(icmp[5]) == id
+}
+
+func putU16(b []byte, v uint16) { b[0], b[1] = byte(v>>8), byte(v) }
+
+func checksum(b []byte) uint16 {
+	var sum uint32
+	for i := 0; i+1 < len(b); i += 2 {
+		sum += uint32(b[i])<<8 | uint32(b[i+1])
+	}
+	if len(b)%2 == 1 {
+		sum += uint32(b[len(b)-1]) << 8
+	}
+	for sum>>16 != 0 {
+		sum = sum&0xffff + sum>>16
+	}
+	return ^uint16(sum)
+}
+
+// Disconnect ends the current session, whatever phase it is in: an in-flight
+// dial/auth is cancelled, a pending (authenticated, pre-RunTunnel) conn is
+// dropped, and a running relay is torn down. The session then reports
+// "disconnected" with no error. Calling it with no session is a no-op that
+// leaves the last error in place (the iOS retry loop reads it afterwards).
 func Disconnect() {
 	current.mu.Lock()
 	defer current.mu.Unlock()
 
-	if !current.connected {
-		log.Printf("[vpnlib] Disconnect called but not connected (status=%s)", current.status)
+	active := current.connected || current.cancelDial != nil || current.pendingBC != nil
+	if !active {
+		log.Printf("[vpnlib] Disconnect: no active session (status=%s)", current.status)
 		return
 	}
+	log.Printf("[vpnlib] Disconnect: stopping session (status=%s)", current.status)
 
-	log.Printf("[vpnlib] Disconnect called, closing connection...")
-
-	close(current.stopCh)
-
-	// [FIX] Close tunFile to unblock any goroutine stuck in tunFile.Read()
-	// This must happen BEFORE conn.Close() so the TUN reader goroutine exits cleanly.
+	current.signalStopLocked()
+	if current.cancelDial != nil {
+		current.cancelDial()
+		current.cancelDial = nil
+	}
+	if current.pendingBC != nil {
+		current.pendingBC.Close()
+		current.pendingBC = nil
+		current.pendingKeys = nil
+		if current.preflightCh != nil {
+			close(current.preflightCh)
+			current.preflightCh = nil
+		}
+		if current.connectUnlockOnce != nil {
+			current.connectUnlockOnce.Do(connectMu.Unlock)
+		}
+	}
+	// Closing both ends unblocks the relay's reader and writer; RunTunnel
+	// sees stopCh closed and returns nil.
 	if current.tunFile != nil {
-		log.Printf("[FIX] Closing TUN file to unblock reader goroutine")
 		current.tunFile.Close()
 		current.tunFile = nil
 	}
-
 	if current.conn != nil {
 		current.conn.Close()
-		log.Printf("[vpnlib] Connection closed")
+		current.conn = nil
 	}
 	current.connected = false
 	current.status = "disconnected"
-	log.Printf("[vpnlib] Disconnected OK")
+	current.lastKind = kindNone
 }
 
-// Status returns the current connection status: "disconnected", "connecting", or "connected".
+// Status returns the current connection status: "disconnected", "connecting",
+// "connected" or "error: <message>".
 func Status() string {
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -1005,8 +940,9 @@ func Status() string {
 
 // LastErrorKind returns the most recent error classification:
 // "none" | "transient" | "auth" | "fatal". Reset to "none" on every
-// Connect()/Preflight() entry. Used by the platform retry loop to decide
-// whether to back off (transient) or stop retrying (auth/fatal).
+// Preflight() entry and by a Disconnect() that stopped a session. Used by the
+// platform retry loop to decide whether to back off (transient) or stop
+// retrying (auth/fatal).
 func LastErrorKind() string {
 	current.mu.Lock()
 	defer current.mu.Unlock()
@@ -1021,7 +957,7 @@ func setStatus(s string) {
 }
 
 // setLastKind transitions the lastKind state and emits a DEBUG line.
-// src is a short tag (e.g. "dial", "auth-response", "recv") so the log
+// src is a short tag (e.g. "dial", "auth-response", "relay") so the log
 // shows where the classification came from.
 func setLastKind(k errKind, src string, cause error) {
 	current.mu.Lock()
@@ -1035,7 +971,7 @@ func setLastKind(k errKind, src string, cause error) {
 	}
 }
 
-// resetLastKind clears the classification at the start of every Connect/Preflight.
+// resetLastKind clears the classification at the start of every Preflight.
 func resetLastKind() {
 	current.mu.Lock()
 	current.lastKind = kindNone
@@ -1063,24 +999,6 @@ func classifyDialErr(err error) errKind {
 	default:
 		return kindTransient
 	}
-}
-
-func cleanup(conn net.Conn, tunFile *os.File) {
-	current.mu.Lock()
-	defer current.mu.Unlock()
-	if conn != nil {
-		conn.Close()
-	}
-	// [FIX] Close tunFile to prevent fd leak and unblock TUN reader goroutine
-	if tunFile != nil && current.tunFile != nil {
-		log.Printf("[FIX] Closing TUN file in cleanup")
-		tunFile.Close()
-		current.tunFile = nil
-	}
-	current.connected = false
-	current.status = "disconnected"
-	setActiveServer("")
-	log.Printf("[vpnlib] Cleanup done")
 }
 
 // GetStats returns a JSON snapshot of traffic counters for the current session.

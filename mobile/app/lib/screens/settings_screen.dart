@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../services/config_storage.dart';
 import '../services/admin_api_service.dart';
 import '../models/vpn_config.dart';
 import '../theme/app_theme.dart';
 import '../utils/validators.dart';
 import '../widgets/footer_common.dart';
+import 'log_screen.dart';
 import 'qr_scanner_screen.dart';
 import 'split_tunneling_screen.dart';
 
@@ -24,14 +26,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final _passwordCtrl = TextEditingController();
   final _sniCtrl = TextEditingController();
   bool _skipVerify = false;
-  String _transport = '';
-  String _fingerprint = '';
-  bool _autoReconnect = false;
+  // The stored config, so saving the manual fields keeps what the form does
+  // not show (fallback endpoints, transport, TLS fingerprint).
+  VpnConfig? _config;
   bool _autoConnectOnLaunch = false;
   bool _killSwitch = false;
   FooterKind _footerWidget = footerDefault;
-  int _reconnectMaxAttempts = 5;
-  int _reconnectMaxBackoff = 60;
+  String _version = '';
   bool _loaded = false;
   String? _serverError;
 
@@ -48,30 +49,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _load() async {
     final config = await _storage.loadConfig();
-    _autoReconnect = await _storage.getAutoReconnect();
     _autoConnectOnLaunch = await _storage.getAutoConnectOnLaunch();
     _killSwitch = await _storage.getKillSwitch();
     _footerWidget = footerKindFromId(await _storage.getFooterWidget());
-    _reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
-    _reconnectMaxBackoff = await _storage.getReconnectMaxBackoff();
     final adminSettings = await _adminApi.loadSettings();
+    try {
+      final info = await PackageInfo.fromPlatform();
+      _version = '${info.version} (${info.buildNumber})';
+    } catch (_) {}
 
-    if (config != null) {
-      _serverCtrl.text = config.server;
-      _serverKeyCtrl.text = config.serverKey;
-      _usernameCtrl.text = config.username;
-      _passwordCtrl.text = config.password;
-      _sniCtrl.text = config.sni;
-      _skipVerify = config.skipVerify;
-      _transport = config.transport;
-      _fingerprint = config.fingerprint;
-    }
+    if (config != null) _fillForm(config);
 
     _adminUrlCtrl.text = adminSettings.url;
     _adminTokenCtrl.text = adminSettings.token;
     _adminSkipVerify = adminSettings.skipVerify;
 
-    setState(() => _loaded = true);
+    if (mounted) setState(() => _loaded = true);
   }
 
   @override
@@ -84,215 +77,47 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Настройки'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.qr_code_scanner),
-            tooltip: 'Сканировать QR',
-            onPressed: _scanQr,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Настройки')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Server config section
-          Text('Конфигурация сервера',
-              style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _serverCtrl,
-            decoration: InputDecoration(
-              labelText: 'Сервер (ip:порт)',
-              hintText: '192.168.1.1:443',
-              border: const OutlineInputBorder(),
-              errorText: _serverError,
-            ),
-            onChanged: (v) {
-              setState(() {
-                _serverError = v.isEmpty ? null : validateServerAddress(v);
-              });
-            },
+          _sectionTitle('Сервер'),
+          _serverSummary(),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            icon: const Icon(Icons.qr_code_scanner),
+            label: Text(_config == null ? 'Настроить по QR-коду' : 'Заменить по QR-коду'),
+            onPressed: _scanQr,
           ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _serverKeyCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Ключ сервера',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _usernameCtrl,
-            decoration: const InputDecoration(
-              labelText: 'Имя пользователя',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _passwordCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Пароль',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _sniCtrl,
-            decoration: const InputDecoration(
-              labelText: 'SNI домен (необязательно)',
-              hintText: 'vpn.example.com',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          SwitchListTile(
-            title: const Text('Пропустить проверку TLS'),
-            subtitle: const Text('Для самоподписанных сертификатов'),
-            value: _skipVerify,
-            onChanged: (v) => setState(() => _skipVerify = v),
-            contentPadding: EdgeInsets.zero,
-          ),
-
-          const SizedBox(height: 16),
-
-          // Transport settings
-          Text('Транспорт', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 12),
-
-          DropdownButtonFormField<String>(
-            value: _transport,
-            decoration: const InputDecoration(
-              labelText: 'Транспортный протокол',
-              border: OutlineInputBorder(),
-            ),
-            items: VpnConfig.transportOptions
-                .map((v) => DropdownMenuItem(
-                      value: v,
-                      child: Text(VpnConfig.transportLabels[v] ?? v),
-                    ))
-                .toList(),
-            onChanged: (v) => setState(() => _transport = v ?? ''),
-          ),
-          const SizedBox(height: 12),
-
-          DropdownButtonFormField<String>(
-            value: _fingerprint,
-            decoration: const InputDecoration(
-              labelText: 'TLS отпечаток',
-              border: OutlineInputBorder(),
-            ),
-            items: VpnConfig.fingerprintOptions
-                .map((v) => DropdownMenuItem(
-                      value: v,
-                      child: Text(VpnConfig.fingerprintLabels[v] ?? v),
-                    ))
-                .toList(),
-            onChanged: (v) => setState(() => _fingerprint = v ?? ''),
-          ),
-
-          const SizedBox(height: 16),
 
           const Divider(height: 40),
 
-          // Connection settings
-          Text('Подключение', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-
+          _sectionTitle('Подключение'),
           SwitchListTile(
-            title: const Text('Автопереподключение'),
-            subtitle:
-                const Text('Автоматически переподключаться при смене сети'),
-            value: _autoReconnect,
-            onChanged: (v) async {
-              await _storage.setAutoReconnect(v);
-              setState(() => _autoReconnect = v);
-            },
-          ),
-
-          SwitchListTile(
-            title: const Text('Автозапуск'),
-            subtitle:
-                const Text('Подключаться автоматически при запуске приложения'),
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Подключаться при запуске'),
+            subtitle: const Text('Включать VPN сразу при открытии приложения'),
             value: _autoConnectOnLaunch,
             onChanged: (v) async {
               await _storage.setAutoConnectOnLaunch(v);
               setState(() => _autoConnectOnLaunch = v);
             },
           ),
-
           SwitchListTile(
+            contentPadding: EdgeInsets.zero,
             title: const Text('Kill Switch'),
-            subtitle:
-                const Text('Блокировать трафик при отключении VPN'),
+            subtitle: const Text(
+                'Если связь с сервером пропала — не пускать трафик мимо VPN, пока не переподключимся'),
             value: _killSwitch,
             onChanged: (v) async {
               await _storage.setKillSwitch(v);
               setState(() => _killSwitch = v);
             },
           ),
-
-          if (_autoReconnect) ...[
-            const SizedBox(height: 8),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Макс. попыток'),
-              subtitle: Text(
-                _reconnectMaxAttempts == 0
-                    ? 'Без ограничений'
-                    : '$_reconnectMaxAttempts попыток',
-              ),
-              trailing: SizedBox(
-                width: 160,
-                child: Slider(
-                  value: _reconnectMaxAttempts.toDouble(),
-                  min: 0,
-                  max: 20,
-                  divisions: 20,
-                  onChanged: (v) async {
-                    final val = v.round();
-                    await _storage.setReconnectMaxAttempts(val);
-                    setState(() => _reconnectMaxAttempts = val);
-                  },
-                ),
-              ),
-            ),
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('Макс. задержка'),
-              subtitle: Text('$_reconnectMaxBackoff с между попытками'),
-              trailing: SizedBox(
-                width: 160,
-                child: Slider(
-                  value: _reconnectMaxBackoff.toDouble(),
-                  min: 10,
-                  max: 300,
-                  divisions: 29,
-                  onChanged: (v) async {
-                    final val = (v / 10).round() * 10;
-                    await _storage.setReconnectMaxBackoff(val);
-                    setState(() => _reconnectMaxBackoff = val);
-                  },
-                ),
-              ),
-            ),
-          ],
-
           ListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('Раздельное туннелирование'),
-            subtitle: const Text('Выбрать приложения или маршруты'),
+            subtitle: const Text('Какие приложения пускать через VPN'),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SplitTunnelingScreen()),
@@ -301,9 +126,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(height: 40),
 
-          // Status widget (footer) section
-          Text('Виджет статуса', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
+          _sectionTitle('Виджет статуса'),
           Text('что показывать под кнопкой',
               style: Theme.of(context).textTheme.bodySmall),
           const SizedBox(height: 12),
@@ -311,56 +134,173 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const Divider(height: 40),
 
-          // Admin API section
-          Text('Admin API', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
-          Text(
-            'Подключение к API управления сервером.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.6),
-                ),
-          ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _adminUrlCtrl,
-            decoration: const InputDecoration(
-              labelText: 'URL администратора',
-              hintText: 'https://1.2.3.4:8443',
-              border: OutlineInputBorder(),
-            ),
-            keyboardType: TextInputType.url,
-          ),
-          const SizedBox(height: 12),
-
-          TextField(
-            controller: _adminTokenCtrl,
-            obscureText: true,
-            decoration: const InputDecoration(
-              labelText: 'Bearer-токен',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 4),
-
-          SwitchListTile(
-            title: const Text('Пропустить проверку TLS'),
-            subtitle: const Text('Для самоподписанных сертификатов'),
-            value: _adminSkipVerify,
-            onChanged: (v) => setState(() => _adminSkipVerify = v),
+          ListTile(
             contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.receipt_long_outlined),
+            title: const Text('Журнал подключений'),
+            subtitle: const Text('Технические подробности ошибок'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LogScreen()),
+            ),
           ),
+          _manualConfigSection(),
+          _adminSection(),
 
-          const SizedBox(height: 24),
-
-          FilledButton(
-            onPressed: _saveAll,
-            child: const Text('Сохранить всё'),
-          ),
-
+          if (_version.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 24),
+              child: Text(
+                'версия $_version',
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontFamily: AppFonts.mono,
+                  fontSize: 11,
+                  color: AppColors.dim,
+                ),
+              ),
+            ),
           const SizedBox(height: 24),
         ],
       ),
+    );
+  }
+
+  Widget _sectionTitle(String text) => Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Text(text, style: Theme.of(context).textTheme.titleMedium),
+      );
+
+  Widget _serverSummary() {
+    final c = _config;
+    if (c == null) {
+      return const Text(
+        'Сервер не настроен. Отсканируйте QR-код, который вам прислали, '
+        'или откройте ссылку-приглашение.',
+        style: TextStyle(color: AppColors.dim),
+      );
+    }
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: const Icon(Icons.dns_outlined),
+      title: Text(c.username),
+      subtitle: Text(c.server),
+    );
+  }
+
+  Widget _manualConfigSection() {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 16),
+      leading: const Icon(Icons.tune),
+      title: const Text('Ручная настройка'),
+      subtitle: const Text('Если нет QR-кода'),
+      children: [
+        TextField(
+          controller: _serverCtrl,
+          decoration: InputDecoration(
+            labelText: 'Сервер (ip:порт)',
+            hintText: '192.168.1.1:443',
+            border: const OutlineInputBorder(),
+            errorText: _serverError,
+          ),
+          onChanged: (v) {
+            setState(() {
+              _serverError = v.isEmpty ? null : validateServerAddress(v);
+            });
+          },
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _serverKeyCtrl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Ключ сервера',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _usernameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Имя пользователя',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _passwordCtrl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Пароль',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _sniCtrl,
+          decoration: const InputDecoration(
+            labelText: 'SNI домен (необязательно)',
+            hintText: 'vpn.example.com',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        SwitchListTile(
+          title: const Text('Пропустить проверку TLS'),
+          subtitle: const Text('Для самоподписанных сертификатов'),
+          value: _skipVerify,
+          onChanged: (v) => setState(() => _skipVerify = v),
+          contentPadding: EdgeInsets.zero,
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _saveManual,
+          child: const Text('Сохранить'),
+        ),
+      ],
+    );
+  }
+
+  Widget _adminSection() {
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      childrenPadding: const EdgeInsets.only(bottom: 16),
+      leading: const Icon(Icons.admin_panel_settings_outlined),
+      title: const Text('Администрирование'),
+      subtitle: const Text('Для владельца сервера'),
+      children: [
+        TextField(
+          controller: _adminUrlCtrl,
+          decoration: const InputDecoration(
+            labelText: 'URL администратора',
+            hintText: 'https://1.2.3.4:8443',
+            border: OutlineInputBorder(),
+          ),
+          keyboardType: TextInputType.url,
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _adminTokenCtrl,
+          obscureText: true,
+          decoration: const InputDecoration(
+            labelText: 'Bearer-токен',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 4),
+        SwitchListTile(
+          title: const Text('Пропустить проверку TLS'),
+          subtitle: const Text('Для самоподписанных сертификатов'),
+          value: _adminSkipVerify,
+          onChanged: (v) => setState(() => _adminSkipVerify = v),
+          contentPadding: EdgeInsets.zero,
+        ),
+        const SizedBox(height: 8),
+        FilledButton(
+          onPressed: _saveAdmin,
+          child: const Text('Сохранить'),
+        ),
+      ],
     );
   }
 
@@ -456,27 +396,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // just show one pool member as a hint of what "random" can yield.
   FooterKind get _resolvedRandomPreview => footerRandomPool.first;
 
-  Future<void> _save() async {
-    final config = VpnConfig(
-      server: _serverCtrl.text,
-      serverKey: _serverKeyCtrl.text,
-      username: _usernameCtrl.text,
-      password: _passwordCtrl.text,
-      sni: _sniCtrl.text,
-      skipVerify: _skipVerify,
-      transport: _transport,
-      fingerprint: _fingerprint,
-    );
-    await _storage.saveConfig(config);
+  void _fillForm(VpnConfig config) {
+    _config = config;
+    _serverCtrl.text = config.server;
+    _serverKeyCtrl.text = config.serverKey;
+    _usernameCtrl.text = config.username;
+    _passwordCtrl.text = config.password;
+    _sniCtrl.text = config.sni;
+    _skipVerify = config.skipVerify;
   }
 
-  Future<void> _saveAll() async {
-    await Future.wait([_save(), _saveAdmin()]);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Настройки сохранены')),
-      );
+  Future<void> _saveManual() async {
+    final server = _serverCtrl.text.trim();
+    final username = _usernameCtrl.text.trim();
+    final sni = _sniCtrl.text.trim();
+    final fields = {
+      'сервер': server,
+      'ключ сервера': _serverKeyCtrl.text,
+      'имя пользователя': username,
+      'пароль': _passwordCtrl.text,
+    };
+    final missing = [
+      for (final e in fields.entries)
+        if (e.value.isEmpty) e.key,
+    ];
+    final error = missing.isNotEmpty
+        ? 'Заполните: ${missing.join(', ')}'
+        : validateServerAddress(server);
+    if (error != null) {
+      _snack(error);
+      return;
     }
+    final base = _config;
+    final config = base == null
+        ? VpnConfig(
+            server: server,
+            serverKey: _serverKeyCtrl.text,
+            username: username,
+            password: _passwordCtrl.text,
+            sni: sni,
+            skipVerify: _skipVerify,
+          )
+        : base.copyWith(
+            server: server,
+            serverKey: _serverKeyCtrl.text,
+            username: username,
+            password: _passwordCtrl.text,
+            sni: sni,
+            skipVerify: _skipVerify,
+          );
+    await _storage.saveConfig(config);
+    setState(() => _config = config);
+    _snack('Сохранено. Переподключитесь, чтобы применить.');
   }
 
   Future<void> _saveAdmin() async {
@@ -485,23 +456,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       token: _adminTokenCtrl.text,
       skipVerify: _adminSkipVerify,
     );
+    _snack('Сохранено');
+  }
+
+  void _snack(String text) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
   Future<void> _scanQr() async {
     final config = await Navigator.of(context).push<VpnConfig>(
       MaterialPageRoute(builder: (_) => const QrScannerScreen()),
     );
-    if (config != null) {
-      _serverCtrl.text = config.server;
-      _serverKeyCtrl.text = config.serverKey;
-      _usernameCtrl.text = config.username;
-      _passwordCtrl.text = config.password;
-      _sniCtrl.text = config.sni;
-      _skipVerify = config.skipVerify;
-      _transport = config.transport;
-      _fingerprint = config.fingerprint;
-      await _save();
-    }
+    if (config == null) return;
+    await _storage.saveConfig(config);
+    setState(() => _fillForm(config));
+    _snack('Сервер настроен');
   }
 
   @override

@@ -61,15 +61,11 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         Log.d(TAG, "onMethodCall: ${call.method}")
         when (call.method) {
             "connect" -> {
-                val config = call.argument<String>("config") ?: ""
-                val autoReconnect = call.argument<Boolean>("auto_reconnect") ?: false
-                val killSwitch = call.argument<Boolean>("kill_switch") ?: false
-                val reconnectMaxAttempts = call.argument<Int>("reconnect_max_attempts") ?: SimpleVpnService.DEFAULT_MAX_RETRIES
-                val reconnectMaxBackoffS = call.argument<Int>("reconnect_max_backoff_s") ?: SimpleVpnService.DEFAULT_MAX_BACKOFF_SECONDS
-                val splitMode = call.argument<String>("split_tunnel_mode") ?: "off"
-                val splitApps = call.argument<List<String>>("split_tunnel_apps") ?: emptyList()
-                startVpn(config, autoReconnect, killSwitch, reconnectMaxAttempts, reconnectMaxBackoffS,
-                    splitMode, splitApps, result)
+                val params = connectParams(call) ?: run {
+                    result.error("NO_CONFIG", "Config is empty", null)
+                    return
+                }
+                startVpn(params, result)
             }
             "disconnect" -> {
                 stopVpn(result)
@@ -78,37 +74,22 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 // Proactively mirror the current config into the widget's prefs so
                 // the home-screen widget can connect without the app being open,
                 // even before the first in-app connect of this version.
-                val config = call.argument<String>("config") ?: ""
-                if (config.isEmpty()) {
-                    result.success(false)
-                } else {
-                    val act = activity
-                    if (act == null) {
-                        result.error("NO_ACTIVITY", "No activity available", null)
-                    } else {
-                        VpnWidgetProvider.saveConnectParams(
-                            act,
-                            config,
-                            call.argument<Boolean>("auto_reconnect") ?: false,
-                            call.argument<Boolean>("kill_switch") ?: false,
-                            call.argument<Int>("reconnect_max_attempts") ?: SimpleVpnService.DEFAULT_MAX_RETRIES,
-                            call.argument<Int>("reconnect_max_backoff_s") ?: SimpleVpnService.DEFAULT_MAX_BACKOFF_SECONDS,
-                            call.argument<String>("split_tunnel_mode") ?: "off",
-                            call.argument<List<String>>("split_tunnel_apps") ?: emptyList(),
-                        )
+                val params = connectParams(call)
+                val act = activity
+                when {
+                    params == null -> result.success(false)
+                    act == null -> result.error("NO_ACTIVITY", "No activity available", null)
+                    else -> {
+                        VpnWidgetProvider.saveConnectParams(act, params)
                         result.success(true)
                     }
                 }
             }
             "status" -> {
-                // Prefer Go-side status (authoritative), fall back to Kotlin-side
-                val goStatus = try { Vpnlib.status() } catch (e: Exception) {
-                    Log.w(TAG, "Vpnlib.status() failed: ${e.message}")
-                    null
-                }
-                val status = goStatus ?: SimpleVpnService.currentStatus
-                Log.d(TAG, "status: go=$goStatus, kotlin=${SimpleVpnService.currentStatus}, returning=$status")
-                result.success(status)
+                // The service's last emitted status is authoritative: it also
+                // covers states vpnlib knows nothing about (retry backoff, the
+                // kill switch holding traffic).
+                result.success(SimpleVpnService.lastStatus)
             }
             "getLogs" -> {
                 val logs = try {
@@ -139,19 +120,18 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
-    private fun startVpn(
-        config: String,
-        autoReconnect: Boolean,
-        killSwitch: Boolean,
-        maxRetries: Int,
-        maxBackoffSeconds: Int,
-        splitMode: String,
-        splitApps: List<String>,
-        result: Result,
-    ) {
-        Log.d(TAG, "startVpn called, config length=${config.length}, autoReconnect=$autoReconnect, " +
-                "killSwitch=$killSwitch, maxRetries=$maxRetries, maxBackoffSeconds=$maxBackoffSeconds, " +
-                "splitMode=$splitMode, splitApps=${splitApps.size}")
+    private fun connectParams(call: MethodCall): ConnectParams? {
+        val config = call.argument<String>("config")
+        if (config.isNullOrEmpty()) return null
+        return ConnectParams(
+            config = config,
+            killSwitch = call.argument<Boolean>("kill_switch") ?: false,
+            splitMode = call.argument<String>("split_tunnel_mode") ?: "off",
+            splitApps = call.argument<List<String>>("split_tunnel_apps") ?: emptyList(),
+        )
+    }
+
+    private fun startVpn(params: ConnectParams, result: Result) {
         val act = activity ?: run {
             Log.e(TAG, "startVpn: no activity available")
             result.error("NO_ACTIVITY", "No activity available", null)
@@ -166,17 +146,7 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             return
         }
 
-        Log.d(TAG, "VPN permission granted, starting service")
-        val serviceIntent = Intent(act, SimpleVpnService::class.java).apply {
-            putExtra("config", config)
-            putExtra("auto_reconnect", autoReconnect)
-            putExtra("kill_switch", killSwitch)
-            putExtra("max_retries", maxRetries)
-            putExtra("max_backoff_seconds", maxBackoffSeconds)
-            putExtra("split_tunnel_mode", splitMode)
-            putStringArrayListExtra("split_tunnel_apps", ArrayList(splitApps))
-        }
-        act.startService(serviceIntent)
+        act.startService(params.toIntent(act))
         result.success(null)
     }
 
@@ -270,7 +240,7 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             return
         }
         val intent = Intent(act, SimpleVpnService::class.java).apply {
-            action = "DISCONNECT"
+            action = SimpleVpnService.ACTION_DISCONNECT
         }
         act.startService(intent)
         result.success(null)

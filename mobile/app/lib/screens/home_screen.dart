@@ -240,16 +240,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (config != null) {
       // Keep the home-screen widget's connect cache in sync with the saved
       // config + settings so it can toggle the VPN without opening the app.
-      final autoReconnect = await _storage.getAutoReconnect();
-      final reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
-      final reconnectMaxBackoffS = await _storage.getReconnectMaxBackoff();
       final splitConfig = await _storage.getSplitTunnelConfig();
       await _vpnService.cacheWidgetParams(
         config.toJson(),
-        autoReconnect: autoReconnect,
         killSwitch: killSwitch,
-        reconnectMaxAttempts: reconnectMaxAttempts,
-        reconnectMaxBackoffS: reconnectMaxBackoffS,
         splitTunnelMode: splitConfig.mode.name,
         splitTunnelApps: splitConfig.apps,
       );
@@ -358,8 +352,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (_visualDisconnecting) return "ПОКА";
     return switch (_status) {
       VpnStatusDisconnected() => _config == null ? "НАСТРОИТЬ" : "НАЖМИ, ЧТОБЫ СКРЫТЬСЯ",
-      VpnStatusConnecting() => "ПОДОЖДИ",
-      VpnStatusReconnecting() => "ПОДОЖДИ",
+      VpnStatusConnecting() => "ПОДОЖДИ · ТАП — ОТМЕНА",
+      VpnStatusReconnecting() => "ПОДОЖДИ · ТАП — ОТМЕНА",
       VpnStatusConnected() => "НАЖМИ, ЧТОБЫ ВЫЙТИ",
       VpnStatusError() => "НАЖМИ, ЧТОБЫ СКРЫТЬСЯ",
     };
@@ -850,19 +844,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (_status is VpnStatusError && _vpnService.errorMessage != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Text(
-              _vpnService.errorMessage!,
-              style: const TextStyle(
-                fontFamily: AppFonts.mono,
-                fontSize: 12,
-                color: Color(0xFFFF4444),
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
         if (_status is VpnStatusError &&
             (_status as VpnStatusError).errorKind == 'unsupported_kill_switch')
           KillSwitchBadge(
@@ -895,22 +876,25 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (_config == null) return 'Открыть настройки VPN';
     return switch (_status) {
       VpnStatusConnected() => 'Отключить VPN',
-      VpnStatusConnecting() => 'Подключение к VPN',
-      VpnStatusReconnecting() => 'Переподключение к VPN',
+      VpnStatusConnecting() => 'Отменить подключение',
+      VpnStatusReconnecting() => 'Отменить переподключение',
       _ => 'Подключить VPN',
     };
   }
 
+  bool get _isActive =>
+      _status is VpnStatusConnected ||
+      _status is VpnStatusConnecting ||
+      _status is VpnStatusReconnecting;
+
+  // A tap while connecting cancels: the native side aborts the dial.
   bool get _canToggle =>
       _config != null &&
       !_actionInProgress &&
-      _status is! VpnStatusConnecting &&
-      _status is! VpnStatusReconnecting &&
-      (_status is VpnStatusConnected ||
-          validateServerAddress(_config!.server) == null);
+      (_isActive || validateServerAddress(_config!.server) == null);
 
   Future<void> _toggleConnection() async {
-    if (_status is VpnStatusConnected) {
+    if (_isActive) {
       _log.info('User pressed Disconnect');
       setState(() {
         _actionInProgress = true;
@@ -941,17 +925,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       }
       _log.debug('Config validated OK, starting connection');
       setState(() => _actionInProgress = true);
-      final autoReconnect = await _storage.getAutoReconnect();
       final killSwitch = await _storage.getKillSwitch();
-      final reconnectMaxAttempts = await _storage.getReconnectMaxAttempts();
-      final reconnectMaxBackoffS = await _storage.getReconnectMaxBackoff();
       final splitConfig = await _storage.getSplitTunnelConfig();
       _vpnService.connect(
         _config!.toJson(),
-        autoReconnect: autoReconnect,
         killSwitch: killSwitch,
-        reconnectMaxAttempts: reconnectMaxAttempts,
-        reconnectMaxBackoffS: reconnectMaxBackoffS,
         splitTunnelMode: splitConfig.mode.name,
         splitTunnelApps: splitConfig.apps,
         splitTunnelRoutes: splitConfig.routes,

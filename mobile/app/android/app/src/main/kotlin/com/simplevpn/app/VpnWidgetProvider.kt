@@ -9,7 +9,6 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import android.widget.RemoteViews
-import vpnlib.Vpnlib
 
 /**
  * Home-screen widget: a single tap toggles the VPN on/off and shows the live
@@ -31,79 +30,57 @@ class VpnWidgetProvider : AppWidgetProvider() {
 
         const val PREFS = "simplevpn_widget"
         const val KEY_CONFIG = "config"
-        const val KEY_AUTO_RECONNECT = "auto_reconnect"
         const val KEY_KILL_SWITCH = "kill_switch"
-        const val KEY_MAX_RETRIES = "max_retries"
-        const val KEY_MAX_BACKOFF = "max_backoff_seconds"
         const val KEY_SPLIT_MODE = "split_tunnel_mode"
         const val KEY_SPLIT_APPS = "split_tunnel_apps" // newline-joined
 
         /**
-         * Persist the last connect params so the widget can reconnect without the
-         * app being open. Called from the service on start AND from Flutter via
-         * the `cacheWidgetParams` method channel when a config is loaded.
+         * Persist the last connect params so the widget (and a system restart of
+         * the service) can reconnect without the app being open. Called from the
+         * service on start AND from Flutter via `cacheWidgetParams`.
          */
         @JvmStatic
-        fun saveConnectParams(
-            ctx: Context,
-            config: String,
-            autoReconnect: Boolean,
-            killSwitch: Boolean,
-            maxRetries: Int,
-            maxBackoff: Int,
-            splitMode: String,
-            splitApps: List<String>,
-        ) {
+        fun saveConnectParams(ctx: Context, p: ConnectParams) {
             ctx.applicationContext
                 .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit()
-                .putString(KEY_CONFIG, config)
-                .putBoolean(KEY_AUTO_RECONNECT, autoReconnect)
-                .putBoolean(KEY_KILL_SWITCH, killSwitch)
-                .putInt(KEY_MAX_RETRIES, maxRetries)
-                .putInt(KEY_MAX_BACKOFF, maxBackoff)
-                .putString(KEY_SPLIT_MODE, splitMode)
-                .putString(KEY_SPLIT_APPS, splitApps.joinToString("\n"))
+                .putString(KEY_CONFIG, p.config)
+                .putBoolean(KEY_KILL_SWITCH, p.killSwitch)
+                .putString(KEY_SPLIT_MODE, p.splitMode)
+                .putString(KEY_SPLIT_APPS, p.splitApps.joinToString("\n"))
                 .apply()
             refresh(ctx)
         }
 
         @JvmStatic
-        fun hasCachedConfig(ctx: Context): Boolean =
-            !ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                .getString(KEY_CONFIG, null).isNullOrEmpty()
+        fun loadConnectParams(ctx: Context): ConnectParams? {
+            val prefs = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val config = prefs.getString(KEY_CONFIG, null)
+            if (config.isNullOrEmpty()) return null
+            return ConnectParams(
+                config = config,
+                killSwitch = prefs.getBoolean(KEY_KILL_SWITCH, false),
+                splitMode = prefs.getString(KEY_SPLIT_MODE, "off") ?: "off",
+                splitApps = (prefs.getString(KEY_SPLIT_APPS, "") ?: "")
+                    .split("\n").filter { it.isNotEmpty() },
+            )
+        }
+
+        @JvmStatic
+        fun hasCachedConfig(ctx: Context): Boolean = loadConnectParams(ctx) != null
 
         /**
          * Build a [SimpleVpnService] start Intent from the cached params, or null
          * if no config has been cached yet.
          */
         @JvmStatic
-        fun cachedConnectIntent(ctx: Context): Intent? {
-            val prefs = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            val config = prefs.getString(KEY_CONFIG, null)
-            if (config.isNullOrEmpty()) return null
-            val splitApps = (prefs.getString(KEY_SPLIT_APPS, "") ?: "")
-                .split("\n").filter { it.isNotEmpty() }
-            return Intent(ctx, SimpleVpnService::class.java).apply {
-                putExtra("config", config)
-                putExtra("auto_reconnect", prefs.getBoolean(KEY_AUTO_RECONNECT, false))
-                putExtra("kill_switch", prefs.getBoolean(KEY_KILL_SWITCH, false))
-                putExtra("max_retries", prefs.getInt(KEY_MAX_RETRIES, SimpleVpnService.DEFAULT_MAX_RETRIES))
-                putExtra("max_backoff_seconds", prefs.getInt(KEY_MAX_BACKOFF, SimpleVpnService.DEFAULT_MAX_BACKOFF_SECONDS))
-                putExtra("split_tunnel_mode", prefs.getString(KEY_SPLIT_MODE, "off"))
-                putStringArrayListExtra("split_tunnel_apps", ArrayList(splitApps))
-            }
-        }
+        fun cachedConnectIntent(ctx: Context): Intent? = loadConnectParams(ctx)?.toIntent(ctx)
 
         /**
          * Redraw every widget instance. Call on each VPN status change.
          *
-         * [stateOverride] is the authoritative state the service is emitting
-         * right now (e.g. "connected"). Pass it from the service: at emit time
-         * `Vpnlib.status()` can still lag a tick behind (the "connected" emit
-         * fires just before `runTunnel`), so re-reading it here would show a
-         * stale "connecting" and the widget would never catch up to "connected"
-         * until the next onUpdate. When null, falls back to [currentState].
+         * [stateOverride] is the state being emitted right now; when null,
+         * falls back to [currentState].
          */
         @JvmStatic
         @JvmOverloads
@@ -115,12 +92,9 @@ class VpnWidgetProvider : AppWidgetProvider() {
             for (id in ids) provider.updateWidget(ctx, mgr, id, stateOverride)
         }
 
-        /** Go-side status is authoritative; fall back to the Kotlin mirror. */
+        /** The service's last emitted state (see [SimpleVpnService.lastStatus]). */
         @JvmStatic
-        fun currentState(): String {
-            val go = try { Vpnlib.status() } catch (_: Throwable) { null }
-            return go ?: SimpleVpnService.currentStatus
-        }
+        fun currentState(): String = SimpleVpnService.state
 
         @JvmStatic
         fun isActive(state: String): Boolean =

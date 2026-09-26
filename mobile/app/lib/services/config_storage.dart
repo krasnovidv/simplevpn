@@ -6,11 +6,8 @@ import '../models/split_tunnel_config.dart';
 
 class ConfigStorage {
   static const _keyConfig = 'vpn_config';
-  static const _keyAutoReconnect = 'auto_reconnect';
   static const _keyAutoConnectOnLaunch = 'auto_connect_on_launch';
   static const _keyKillSwitch = 'kill_switch';
-  static const _keyReconnectMaxAttempts = 'reconnect_max_attempts';
-  static const _keyReconnectMaxBackoff = 'reconnect_max_backoff_s';
   static const _keySplitTunnelMode = 'split_tunneling_mode';
   static const _keySplitTunnelApps = 'split_tunneling_apps';
   static const _keySplitTunnelRoutes = 'split_tunneling_routes';
@@ -29,16 +26,6 @@ class ConfigStorage {
 
   Future<void> saveConfig(VpnConfig config) async {
     await _secureStorage.write(key: _keyConfig, value: config.toJson());
-  }
-
-  Future<bool> getAutoReconnect() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getBool(_keyAutoReconnect) ?? false;
-  }
-
-  Future<void> setAutoReconnect(bool value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyAutoReconnect, value);
   }
 
   /// When enabled, the app initiates a connection automatically on cold start
@@ -61,27 +48,6 @@ class ConfigStorage {
   Future<void> setKillSwitch(bool value) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyKillSwitch, value);
-  }
-
-  // 0 = unlimited
-  Future<int> getReconnectMaxAttempts() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt(_keyReconnectMaxAttempts) ?? 5;
-  }
-
-  Future<void> setReconnectMaxAttempts(int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_keyReconnectMaxAttempts, value);
-  }
-
-  Future<int> getReconnectMaxBackoff() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt(_keyReconnectMaxBackoff) ?? 60;
-  }
-
-  Future<void> setReconnectMaxBackoff(int value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_keyReconnectMaxBackoff, value);
   }
 
   Future<SplitTunnelConfig> getSplitTunnelConfig() async {
