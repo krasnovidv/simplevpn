@@ -1,13 +1,19 @@
 package com.simplevpn.app
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import android.net.VpnService
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -20,12 +26,22 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
+import io.flutter.plugin.common.PluginRegistry
 import vpnlib.Vpnlib
 import java.io.ByteArrayOutputStream
 
-class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
+class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware, PluginRegistry.ActivityResultListener {
     private lateinit var channel: MethodChannel
     private var activity: Activity? = null
+    private var activityBinding: ActivityPluginBinding? = null
+    private var appContext: Context? = null
+
+    // Pending result of a prepareVpn call, completed from onActivityResult.
+    private var pendingPrepare: Result? = null
+
+    // Underlying (non-VPN) networks with internet, for the "no network" screen.
+    private val onlineNetworks = mutableSetOf<Network>()
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     companion object {
         private const val TAG = "SimpleVPN"
@@ -50,11 +66,102 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         channel = MethodChannel(binding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
         _channel = channel
+        appContext = binding.applicationContext
+        watchNetworks(binding.applicationContext)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         _channel = null
+        networkCallback?.let {
+            try {
+                (binding.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
+                    .unregisterNetworkCallback(it)
+            } catch (_: Exception) {}
+        }
+        networkCallback = null
+    }
+
+    private fun watchNetworks(ctx: Context) {
+        val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val request = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        val main = Handler(Looper.getMainLooper())
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                main.post { update { onlineNetworks.add(network) } }
+            }
+            override fun onLost(network: Network) {
+                main.post { update { onlineNetworks.remove(network) } }
+            }
+            private fun update(change: () -> Unit) {
+                val was = onlineNetworks.isNotEmpty()
+                change()
+                val now = onlineNetworks.isNotEmpty()
+                if (was != now) _channel?.invokeMethod("onNetworkChanged", now)
+            }
+        }
+        try {
+            cm.registerNetworkCallback(request, cb)
+            networkCallback = cb
+        } catch (e: Exception) {
+            Log.w(TAG, "network watch unavailable: ${e.message}")
+        }
+    }
+
+    private fun isOnline(): Boolean {
+        if (networkCallback == null) return true
+        if (onlineNetworks.isNotEmpty()) return true
+        // Callbacks for already-connected networks may not have arrived yet.
+        val cm = appContext?.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+        return cm.allNetworks.any { n ->
+            cm.getNetworkCapabilities(n)?.let {
+                it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    it.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            } ?: false
+        }
+    }
+
+    private fun prepareVpn(result: Result) {
+        val act = activity ?: run {
+            result.error("NO_ACTIVITY", "No activity available", null)
+            return
+        }
+        val intent = VpnService.prepare(act)
+        if (intent == null) {
+            result.success(true)
+            return
+        }
+        pendingPrepare?.success(false)
+        pendingPrepare = result
+        act.startActivityForResult(intent, VPN_REQUEST_CODE)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != VPN_REQUEST_CODE) return false
+        pendingPrepare?.success(resultCode == Activity.RESULT_OK)
+        pendingPrepare = null
+        return true
+    }
+
+    private fun openNetworkSettings(result: Result) {
+        val act = activity ?: run {
+            result.success(false)
+            return
+        }
+        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Intent(android.provider.Settings.Panel.ACTION_INTERNET_CONNECTIVITY)
+        } else {
+            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)
+        }
+        try {
+            act.startActivity(intent)
+            result.success(true)
+        } catch (e: Exception) {
+            result.success(false)
+        }
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -69,6 +176,17 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             }
             "disconnect" -> {
                 stopVpn(result)
+            }
+            "prepareVpn" -> prepareVpn(result)
+            "isOnline" -> result.success(isOnline())
+            "openNetworkSettings" -> openNetworkSettings(result)
+            "openVpnSettings" -> {
+                try {
+                    activity?.startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS))
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.success(false)
+                }
             }
             "cacheWidgetParams" -> {
                 // Proactively mirror the current config into the widget's prefs so
@@ -248,18 +366,26 @@ class VpnPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         activity = binding.activity
+        activityBinding = binding
+        binding.addActivityResultListener(this)
     }
 
     override fun onDetachedFromActivity() {
+        activityBinding?.removeActivityResultListener(this)
+        activityBinding = null
         activity = null
         cachedAppList = null
+        pendingPrepare?.success(false)
+        pendingPrepare = null
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        activity = binding.activity
+        onAttachedToActivity(binding)
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
+        activityBinding?.removeActivityResultListener(this)
+        activityBinding = null
         activity = null
     }
 }

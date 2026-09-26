@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@drawable/widget_card" android:padding="18dp">
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:text="СЕГОДНЯ" android:letterSpacing="0.08"
+        android:textColor="@color/w_sub" android:textSize="12sp" android:fontFamily="sans-serif-black" />
+    <View android:layout_width="0dp" android:layout_height="0dp" android:layout_weight="1" />
+    <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:orientation="horizontal" android:baselineAligned="true">
+        <TextView android:id="@+id/amount"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="0" android:textColor="@color/w_text" android:textSize="38sp"
+            android:fontFamily="sans-serif-black" android:includeFontPadding="false" />
+        <TextView android:id="@+id/unit"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text=" МБ" android:textColor="@color/w_text" android:textSize="16sp"
+            android:fontFamily="sans-serif-black" />
+    </LinearLayout>
+    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:layout_marginTop="4dp" android:text="спрятали от глаз"
+        android:textColor="@color/w_sub" android:textSize="12.5sp" android:fontFamily="sans-serif-medium" />
+</LinearLayout>

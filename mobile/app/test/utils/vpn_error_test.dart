@@ -3,39 +3,39 @@ import 'package:simplevpn/utils/vpn_error.dart';
 
 void main() {
   test('auth kind maps to credentials message', () {
-    expect(friendlyVpnError('auth', null), 'НЕВЕРНЫЙ ЛОГИН ИЛИ ПАРОЛЬ');
+    expect(friendlyVpnError('auth', null), 'Неверный логин или пароль');
     expect(friendlyVpnError('transient', 'invalid password'),
-        'НЕВЕРНЫЙ ЛОГИН ИЛИ ПАРОЛЬ');
+        'Неверный логин или пароль');
   });
 
   test('network errors map to no-network', () {
     expect(friendlyVpnError('transient', 'Failed host lookup: api'),
-        'НЕТ ПОДКЛЮЧЕНИЯ К СЕТИ');
+        'Нет подключения к сети');
     expect(friendlyVpnError('transient', 'Network is unreachable'),
-        'НЕТ ПОДКЛЮЧЕНИЯ К СЕТИ');
+        'Нет подключения к сети');
   });
 
   test('timeout/refused map to server-unreachable', () {
     expect(friendlyVpnError('transient', 'dial tcp: i/o timeout'),
-        'СЕРВЕР НЕДОСТУПЕН');
+        'Сервер недоступен');
     expect(friendlyVpnError('transient', 'connection refused'),
-        'СЕРВЕР НЕДОСТУПЕН');
+        'Сервер недоступен');
   });
 
   test('unknown falls back to generic', () {
-    expect(friendlyVpnError('fatal', 'some weird thing'), 'ОШИБКА СОЕДИНЕНИЯ');
-    expect(friendlyVpnError('transient', null), 'ОШИБКА СОЕДИНЕНИЯ');
+    expect(friendlyVpnError('fatal', 'some weird thing'), 'Ошибка соединения');
+    expect(friendlyVpnError('transient', null), 'Ошибка соединения');
   });
 
   test('network failure during auth is not a credentials error', () {
     expect(friendlyVpnError('transient', 'auth response: read tcp: i/o timeout'),
-        'СЕРВЕР НЕДОСТУПЕН');
+        'Сервер недоступен');
   });
 
   test('stalled tunnel and kill switch have their own messages', () {
     expect(friendlyVpnError('transient', 'tunnel stalled: no data from server'),
-        'СЕРВЕР ПЕРЕСТАЛ ОТВЕЧАТЬ');
+        'Сервер перестал отвечать');
     expect(friendlyVpnError('transient', 'blocked (kill switch)'),
-        'ТРАФИК ЗАБЛОКИРОВАН (KILL SWITCH)');
+        'Рубильник держит трафик: VPN упал, наружу ничего не уходит');
   });
 }

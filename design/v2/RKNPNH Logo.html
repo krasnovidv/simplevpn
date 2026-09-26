@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>RKNPNH — Logo Explorations</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Archivo+Black&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; }
+  body { font-family: 'Space Grotesk', system-ui, sans-serif; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="logos.jsx"></script>
+<script type="text/babel">
+const directions = [
+  { id: '01-cat', title: '01 · Balaclava Cat', subtitle: 'Absurd mascot — a cat in a ski mask. Cute + criminal.',
+    Icon: Logo01_Icon, Avatar: Logo01_Avatar, Sticker: Logo01_Sticker },
+  { id: '02-tongue', title: '02 · Glitched Tongue Face', subtitle: 'Meme-y emoji-face with X-eyes, tongue out, RGB-split scanlines.',
+    Icon: Logo02_Icon, Avatar: Logo02_Avatar, Sticker: Logo02_Sticker },
+  { id: '03-cam', title: '03 · Burning Surveillance Cam', subtitle: 'Direct rebellion metaphor. CCTV on fire, lens X\u2019d out.',
+    Icon: Logo03_Icon, Avatar: Logo03_Avatar, Sticker: Logo03_Sticker },
+  { id: '04-glitch', title: '04 · Glitch Wordmark', subtitle: 'Pure typography. RGB-split chromatic aberration — no mascot.',
+    Icon: Logo04_Icon, Avatar: Logo04_Avatar, Sticker: Logo04_Sticker },
+  { id: '05-ghost', title: '05 · Vanish Ghost', subtitle: 'Cute mascot — your data, poof. Tongue-out, blep-y vibes.',
+    Icon: Logo05_Icon, Avatar: Logo05_Avatar, Sticker: Logo05_Sticker },
+  { id: '06-stamp', title: '06 · NOT APPROVED Stamp', subtitle: 'Mock-official rubber-stamp wordmark. Bureaucracy turned into a joke.',
+    Icon: Logo06_Icon, Avatar: Logo06_Avatar, Sticker: Logo06_Sticker },
+];
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="intro" title="RKNPNH · Logo Explorations" subtitle="Six directions · cyber-neon palette · all-caps wordmark · no NSFW (so app stores stay happy).">
+        <DCArtboard id="brief" label="Brief & system" width={520} height={420}>
+          <div style={{ padding: 28, fontFamily: 'Space Grotesk, sans-serif', height: '100%', boxSizing: 'border-box', background: '#0a0612', color: '#f5f3ff' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 4, color: '#00f0ff', marginBottom: 12 }}>// THE BRIEF</div>
+            <div style={{ fontSize: 22, fontWeight: 700, lineHeight: 1.25, marginBottom: 20, textWrap: 'pretty' }}>
+              A logo for a VPN that flips off the regulator without getting flagged in app stores.
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.55, color: '#b8a8d8', marginBottom: 18 }}>
+              Funny &gt; aggressive. We get the &ldquo;protest&rdquo; energy across via balaclavas,
+              tongues out, burning cameras, denied stamps &mdash; not anatomy.
+            </div>
+            <div style={{ borderTop: '1px solid #2a1f3a', paddingTop: 16, display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
+              <Row k="palette" v="#00f0ff cyan · #ff2bd6 magenta · #a259ff purple · #fff200 yellow · #0a0612 ink"/>
+              <Row k="type" v="Space Grotesk 700/900 · Archivo Black · JetBrains Mono"/>
+              <Row k="formats" v="App icon · social avatar · sticker"/>
+              <Row k="vibe" v="absurd · meme-y · cyber"/>
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      {directions.map(d => (
+        <DCSection key={d.id} id={d.id} title={d.title} subtitle={d.subtitle}>
+          <DCArtboard id="icon" label="App icon · 220" width={220} height={220} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+            <d.Icon/>
+          </DCArtboard>
+          <DCArtboard id="avatar" label="Avatar · 220" width={220} height={220} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+            <d.Avatar/>
+          </DCArtboard>
+          <DCArtboard id="sticker" label="Sticker · 320×220" width={320} height={220} style={{ borderRadius: 0, background: 'transparent', boxShadow: 'none' }}>
+            <d.Sticker/>
+          </DCArtboard>
+        </DCSection>
+      ))}
+    </DesignCanvas>
+  );
+}
+
+function Row({ k, v }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '70px 1fr', gap: 12, alignItems: 'baseline' }}>
+      <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: 1, color: '#5a4a7a', textTransform: 'uppercase' }}>{k}</div>
+      <div style={{ color: '#f5f3ff', fontSize: 12, lineHeight: 1.4 }}>{v}</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

@@ -257,6 +257,58 @@ class VpnService with WidgetsBindingObserver {
     }
   }
 
+  final _network = StreamController<bool>.broadcast();
+
+  /// Emits when the device gains or loses its last usable (non-VPN) network.
+  Stream<bool> get networkChanges => _network.stream;
+
+  /// Whether any non-VPN network with internet is up. Platforms without the
+  /// native method are assumed online.
+  Future<bool> isOnline() async {
+    try {
+      return await _channel.invokeMethod<bool>('isOnline') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Asks for the system VPN permission if it has not been granted yet.
+  /// Resolves to false when the user declines.
+  Future<bool> prepare() async {
+    try {
+      return await _channel.invokeMethod<bool>('prepareVpn') ?? true;
+    } on MissingPluginException {
+      return true;
+    } catch (e) {
+      _log.error('VPN permission request failed: $e');
+      return false;
+    }
+  }
+
+  /// Opens the system internet-connectivity panel (Wi-Fi / mobile data).
+  Future<void> openNetworkSettings() async {
+    try {
+      await _channel.invokeMethod('openNetworkSettings');
+    } catch (_) {}
+  }
+
+  /// Opens Android's VPN settings, where "Always-on VPN" and "Block
+  /// connections without VPN" live.
+  Future<void> openVpnSettings() async {
+    try {
+      await _channel.invokeMethod('openVpnSettings');
+    } catch (_) {}
+  }
+
+  Future<TrafficStats> getStats() async {
+    try {
+      final raw = await _channel.invokeMethod<String>('getStats');
+      return raw == null ? TrafficStats.zero : TrafficStats.fromJson(raw);
+    } catch (_) {
+      return TrafficStats.zero;
+    }
+  }
+
   /// Native status: a structured map on Android, a legacy string on iOS.
   Future<Object?> getStatus() => _channel.invokeMethod<Object>('status');
 
@@ -323,6 +375,8 @@ class VpnService with WidgetsBindingObserver {
 
   Future<void> _handlePlatformCall(MethodCall call) async {
     switch (call.method) {
+      case 'onNetworkChanged':
+        if (!_network.isClosed) _network.add(call.arguments == true);
       case 'onStatusChanged':
         final newStatus = _parseStatusResult(call.arguments);
         final logStr = call.arguments is Map
@@ -447,6 +501,7 @@ class VpnService with WidgetsBindingObserver {
     _stopPolling();
     _stopStatsPolling();
     _statsController.close();
+    _network.close();
     WidgetsBinding.instance.removeObserver(this);
   }
 }

@@ -1,10 +1,10 @@
 /// Maps a VPN error (kind + raw technical message) to a short, human-readable
-/// Russian phrase suitable for the status line. The raw message stays in the
+/// Russian phrase suitable for the status line (sentence case). The raw message stays in the
 /// logs; users see a cause, not a stack-trace fragment.
 String friendlyVpnError(String kind, String? message) {
   final m = (message ?? '').toLowerCase();
 
-  if (m.contains('kill switch')) return 'ТРАФИК ЗАБЛОКИРОВАН (KILL SWITCH)';
+  if (m.contains('kill switch')) return 'Рубильник держит трафик: VPN упал, наружу ничего не уходит';
 
   // Only an explicit rejection means bad credentials; "auth response: i/o
   // timeout" is the network failing mid-handshake.
@@ -14,7 +14,7 @@ String friendlyVpnError(String kind, String? message) {
       m.contains('unauthorized') ||
       m.contains('invalid password') ||
       m.contains('invalid user')) {
-    return 'НЕВЕРНЫЙ ЛОГИН ИЛИ ПАРОЛЬ';
+    return 'Неверный логин или пароль';
   }
 
   if (m.contains('no route') ||
@@ -23,13 +23,13 @@ String friendlyVpnError(String kind, String? message) {
       m.contains('failed host lookup') ||
       m.contains('offline') ||
       m.contains('no internet')) {
-    return 'НЕТ ПОДКЛЮЧЕНИЯ К СЕТИ';
+    return 'Нет подключения к сети';
   }
 
-  if (m.contains('stalled')) return 'СЕРВЕР ПЕРЕСТАЛ ОТВЕЧАТЬ';
+  if (m.contains('stalled')) return 'Сервер перестал отвечать';
 
   if (m.contains('x509') || m.contains('certificate')) {
-    return 'ОШИБКА СЕРТИФИКАТА СЕРВЕРА';
+    return 'Ошибка сертификата сервера';
   }
 
   if (m.contains('timeout') ||
@@ -38,8 +38,8 @@ String friendlyVpnError(String kind, String? message) {
       m.contains('unreachable') ||
       m.contains('connection reset') ||
       m.contains('dial')) {
-    return 'СЕРВЕР НЕДОСТУПЕН';
+    return 'Сервер недоступен';
   }
 
-  return 'ОШИБКА СОЕДИНЕНИЯ';
+  return 'Ошибка соединения';
 }

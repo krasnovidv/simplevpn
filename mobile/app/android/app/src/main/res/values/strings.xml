@@ -1,6 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">RKN·PNH</string>
-    <string name="widget_label">RKNPNH VPN</string>
-    <string name="widget_description">Подключение к VPN одним касанием</string>
+    <string name="app_name">RKNPNH</string>
+    <string name="widget_label">RKNPNH · кнопка</string>
+    <string name="widget_description">Спрятаться одним касанием</string>
+    <string name="widget_wide_label">RKNPNH · сфера</string>
+    <string name="widget_wide_description">Статус, таймер и кнопка</string>
+    <string name="widget_stats_label">RKNPNH · сегодня</string>
+    <string name="widget_stats_description">Сколько трафика спрятали за день</string>
 </resources>

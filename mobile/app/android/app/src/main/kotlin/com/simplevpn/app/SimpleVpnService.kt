@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
@@ -86,6 +87,18 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         private const val MTU = 1380
 
         private val sessionGen = AtomicInteger(0)
+
+        private const val TRAFFIC_TICK_MS = 10_000L
+
+        /**
+         * When the current session came up: elapsedRealtime for the widget's
+         * Chronometer, wall clock for the notification's. 0 when not connected.
+         */
+        @Volatile
+        var connectedAtElapsed = 0L
+            private set
+        @Volatile
+        private var connectedAtWall = 0L
 
         /**
          * The last status pushed to Flutter and the widget — the single source
@@ -582,26 +595,74 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         max?.let { map["max"] = it }
         errorKind?.let { map["errorKind"] = it }
         errorMessage?.let { map["errorMessage"] = it }
+        if (state == "connected") {
+            if (connectedAtElapsed == 0L) {
+                connectedAtElapsed = SystemClock.elapsedRealtime()
+                connectedAtWall = System.currentTimeMillis()
+            }
+            startTrafficTicker()
+        } else {
+            connectedAtElapsed = 0L
+            connectedAtWall = 0L
+            stopTrafficTicker()
+        }
         lastStatus = map
         Log.d(TAG, "status → $map")
         VpnPlugin.emitStatus(map)
         try { VpnWidgetProvider.refresh(applicationContext, state) } catch (e: Exception) {
             Log.w(TAG, "widget refresh failed: ${e.message}")
         }
-        if (foreground) notify(notificationText(map))
+        if (foreground) notifyStatus()
     }
 
-    private fun notificationText(s: Map<String, Any?>): String = when (s["state"]) {
-        "connected" -> "Подключено"
-        "reconnecting" -> "Переподключение… (попытка ${s["attempt"]}/${s["max"]})"
-        "error" -> if (params?.killSwitch == true) "Нет связи с сервером — трафик заблокирован"
-                   else "Ошибка подключения"
-        else -> "Подключение…"
+    // Session byte counters as last seen, to feed deltas into TrafficToday.
+    private var lastSessionBytes = 0L
+    private var sessionBytes = 0L
+    private val trafficTick = object : Runnable {
+        override fun run() {
+            sampleTraffic()
+            if (foreground) notifyStatus()
+            main.postDelayed(this, TRAFFIC_TICK_MS)
+        }
     }
+
+    private fun startTrafficTicker() {
+        main.removeCallbacks(trafficTick)
+        lastSessionBytes = 0L
+        sessionBytes = 0L
+        main.postDelayed(trafficTick, TRAFFIC_TICK_MS)
+    }
+
+    private fun stopTrafficTicker() {
+        main.removeCallbacks(trafficTick)
+        sampleTraffic()
+    }
+
+    private fun sampleTraffic() {
+        val total = try {
+            val o = org.json.JSONObject(Vpnlib.getStats())
+            o.optLong("bytes_in") + o.optLong("bytes_out")
+        } catch (_: Exception) {
+            return
+        }
+        // vpnlib resets its counters per session; a drop means a new session.
+        val delta = if (total >= lastSessionBytes) total - lastSessionBytes else total
+        lastSessionBytes = total
+        if (delta > 0) {
+            sessionBytes += delta
+            TrafficToday.add(this, delta)
+            try { VpnWidgetProvider.refresh(applicationContext) } catch (_: Exception) {}
+        }
+    }
+
+    /** «Статус в шторке», a Flutter preference read straight from its store. */
+    private fun statusInShade(): Boolean =
+        getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+            .getBoolean("flutter.status_in_shade", true)
 
     private fun ensureForeground() {
         if (foreground) return
-        startForeground(NOTIFICATION_ID, buildNotification(notificationText(lastStatus)))
+        startForeground(NOTIFICATION_ID, buildNotification())
         foreground = true
     }
 
@@ -612,7 +673,25 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
         }
     }
 
-    private fun buildNotification(text: String): Notification {
+    private fun buildNotification(): Notification {
+        val s = lastStatus
+        val shade = statusInShade()
+        val (title, text) = when (s["state"]) {
+            "connected" -> "Ты невидимка" to if (shade && sessionBytes > 0) {
+                val (amount, unit) = TrafficToday.format(sessionBytes)
+                "Амстердам · спрятали $amount $unit"
+            } else {
+                "Амстердам"
+            }
+            "reconnecting" -> "Прячем тебя…" to "Переподключаемся · попытка ${s["attempt"]} из ${s["max"]}"
+            "error" -> if (params?.killSwitch == true) {
+                "Рубильник сработал" to "VPN упал — интернет выключен, ничего не утекло"
+            } else {
+                "Ты снова на виду" to "Не удалось подключиться"
+            }
+            else -> "Прячем тебя…" to "Заметаем следы, путаем провода…"
+        }
+
         val immutable = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0
         val open = packageManager.getLaunchIntentForPackage(packageName)?.let {
             PendingIntent.getActivity(this, 0, it, immutable or PendingIntent.FLAG_UPDATE_CURRENT)
@@ -628,19 +707,25 @@ class SimpleVpnService : VpnService(), vpnlib.SocketProtector {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
+        val timer = shade && s["state"] == "connected" && connectedAtWall > 0
         @Suppress("DEPRECATION")
         return builder
-            .setContentTitle(getString(R.string.app_name))
+            .setContentTitle(title)
             .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_stat_shield)
+            .setColor(0xFF6B4DFF.toInt())
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setShowWhen(timer)
+            .setUsesChronometer(timer)
+            .setWhen(if (timer) connectedAtWall else System.currentTimeMillis())
             .setContentIntent(open)
             .addAction(0, "Отключить", stop)
             .build()
     }
 
-    private fun notify(text: String) {
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
+    private fun notifyStatus() {
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
     }
 
     override fun onRevoke() {

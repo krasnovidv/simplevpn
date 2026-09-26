@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_card" android:padding="6dp">
+    <ImageView android:id="@+id/power_bg"
+        android:layout_width="44dp" android:layout_height="44dp" android:layout_gravity="center"
+        android:src="@drawable/widget_power_off" android:contentDescription="@null" />
+    <ImageView android:id="@+id/power_icon"
+        android:layout_width="22dp" android:layout_height="22dp" android:layout_gravity="center"
+        android:src="@drawable/ic_power" android:contentDescription="@null" />
+</FrameLayout>

@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>RKNPNH — App Icon</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Archivo+Black&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; }
+  body { font-family: 'Space Grotesk', system-ui, sans-serif; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel">
+
+// Palette — locked
+const C = {
+  bg:        '#120a1f',  // deep dark purple
+  bgDeep:    '#0a0612',  // near-black ink
+  magenta:   '#ff2bd6',
+  magentaHi: '#ff5ce0',
+  cyan:      '#00f0ff',
+  purple:    '#a259ff',
+  yellow:    '#fff200',
+  white:     '#f5f3ff',
+};
+
+// Deterministic speckle that doesn't flicker between renders
+function speckle(seed, count = 60) {
+  const rand = (n) => {
+    const x = Math.sin(seed * 9999 + n * 7.1) * 10000;
+    return x - Math.floor(x);
+  };
+  return Array.from({ length: count }, (_, i) => ({
+    cx: rand(i * 2) * 100,
+    cy: rand(i * 2 + 1) * 100,
+    r: rand(i * 2 + 3) * 0.7 + 0.1,
+    o: rand(i * 2 + 5) * 0.4 + 0.1,
+  }));
+}
+
+// Reusable stamp block — sized in viewBox units (0..100), TWO-LINE wordmark
+function Stamp({
+  scale = 1,
+  rotate = -7,
+  borderColor = C.magenta,
+  textColor = C.magenta,
+  glow = true,
+  showCorners = true,
+  showStars = true,
+  topLine = '★ NOT APPROVED ★',
+  bottomLine = null,
+  innerStroke = null,
+}) {
+  const w = 64, h = 64;
+  return (
+    <g transform={`translate(50 50) rotate(${rotate}) scale(${scale}) translate(${-w/2} ${-h/2})`}>
+      {glow && (
+        <rect x="-3" y="-3" width={w+6} height={h+6} rx="4" fill="none" stroke={borderColor} strokeWidth="0.5" opacity="0.25" filter="blur(2px)"/>
+      )}
+      {/* outer rect */}
+      <rect x="0" y="0" width={w} height={h} rx="3"
+        fill="none" stroke={borderColor} strokeWidth="2.2"/>
+      {/* inner thin rect */}
+      {innerStroke !== false && (
+        <rect x="2.2" y="2.2" width={w-4.4} height={h-4.4} rx="1.6"
+          fill="none" stroke={borderColor} strokeWidth="0.5" opacity="0.6"/>
+      )}
+      {/* corner ticks */}
+      {showCorners && [
+        [3,3],[w-3,3],[3,h-3],[w-3,h-3]
+      ].map(([cx,cy], i) => (
+        <circle key={i} cx={cx} cy={cy} r="0.7" fill={borderColor}/>
+      ))}
+      {/* main text — line 1 */}
+      <text x={w/2} y={28}
+        fontFamily='"Archivo Black", "Inter", sans-serif'
+        fontSize="20" fontWeight="900"
+        textAnchor="middle"
+        fill={textColor}
+        letterSpacing="0.8">
+        RKN
+      </text>
+      {/* main text — line 2 */}
+      <text x={w/2} y={48}
+        fontFamily='"Archivo Black", "Inter", sans-serif'
+        fontSize="20" fontWeight="900"
+        textAnchor="middle"
+        fill={textColor}
+        letterSpacing="0.8">
+        PNH
+      </text>
+      {/* sub-line */}
+      <text x={w/2} y={57}
+        fontFamily='"Space Grotesk", sans-serif'
+        fontSize="3.2" fontWeight="700"
+        textAnchor="middle"
+        fill={textColor}
+        letterSpacing="1.4">
+        {topLine}
+      </text>
+      {bottomLine && (
+        <text x={w/2} y={9}
+          fontFamily='"JetBrains Mono", monospace'
+          fontSize="2.6" fontWeight="700"
+          textAnchor="middle"
+          fill={textColor}
+          opacity="0.7"
+          letterSpacing="1.2">
+          {bottomLine}
+        </text>
+      )}
+    </g>
+  );
+}
+
+// Background patterns
+function ScanlineBg({ color = 'rgba(255,255,255,0.04)', spacing = 4 }) {
+  return (
+    <pattern id="bg-scan" width="2" height={spacing} patternUnits="userSpaceOnUse">
+      <rect width="2" height="1" fill={color}/>
+    </pattern>
+  );
+}
+
+// One big rounded-square icon at 220x220, drawn as SVG so it scales cleanly
+function IconShell({ children, bg = C.bg, radius = 48, size = 220 }) {
+  return (
+    <div style={{ width: size, height: size, borderRadius: radius, overflow: 'hidden',
+      background: bg, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.25), 0 1px 2px rgba(0,0,0,0.3)' }}>
+      {children}
+    </div>
+  );
+}
+
+// ─── Variant A — Classic stamp on plain dark ─────────────────
+function VarA() {
+  const dots = speckle(1, 80);
+  return (
+    <IconShell bg={C.bg}>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        {/* paper grunge */}
+        {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={d.r} fill={C.white} opacity={d.o * 0.3}/>)}
+        <Stamp rotate={-8}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant B — Stamp + scanlines + radial glow ────────────
+function VarB() {
+  return (
+    <IconShell bg={C.bgDeep}>
+      <div style={{ position: 'absolute', inset: 0,
+        background: `radial-gradient(circle at 50% 55%, ${C.magenta}30, transparent 60%)` }}/>
+      <div style={{ position: 'absolute', inset: 0,
+        backgroundImage: 'repeating-linear-gradient(0deg, transparent 0 4px, rgba(255,255,255,0.04) 4px 5px)' }}/>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        <Stamp rotate={-7} bottomLine="VPN.EXE_"/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant C — Cyan + magenta double stamp (RGB-split) ────
+function VarC() {
+  return (
+    <IconShell bg={C.bgDeep}>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        <g opacity="0.6" transform="translate(-1.5 0)">
+          <Stamp rotate={-7} borderColor={C.cyan} textColor={C.cyan} glow={false} innerStroke={false} showCorners={false}/>
+        </g>
+        <g opacity="0.6" transform="translate(1.5 0)">
+          <Stamp rotate={-7} borderColor={C.magenta} textColor={C.magenta} glow={false} innerStroke={false} showCorners={false}/>
+        </g>
+        <Stamp rotate={-7} borderColor={C.white} textColor={C.white}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant D — Stamp on yellow caution background ─────────
+function VarD() {
+  return (
+    <IconShell bg={C.yellow}>
+      {/* hazard stripes */}
+      <div style={{ position: 'absolute', inset: 0,
+        backgroundImage: `repeating-linear-gradient(45deg, transparent 0 16px, rgba(0,0,0,0.08) 16px 28px)` }}/>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        <Stamp rotate={-6} borderColor={C.bgDeep} textColor={C.bgDeep} glow={false}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant E — Big single-line stamp, denser ──────────────
+function VarE() {
+  const dots = speckle(3, 100);
+  return (
+    <IconShell bg={C.bg}>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={d.r * 0.7} fill={C.magenta} opacity={d.o * 0.25}/>)}
+        <Stamp rotate={-9} scale={1.15}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant F — White stamp on magenta ─────────────────────
+function VarF() {
+  return (
+    <IconShell bg={C.magenta}>
+      <div style={{ position: 'absolute', inset: 0,
+        backgroundImage: 'repeating-linear-gradient(0deg, transparent 0 4px, rgba(0,0,0,0.06) 4px 5px)' }}/>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        <Stamp rotate={-7} borderColor={C.white} textColor={C.white}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant G — Stamp inside circular seal ─────────────────
+function VarG() {
+  return (
+    <IconShell bg={C.bgDeep}>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        {/* circular seal */}
+        <circle cx="50" cy="50" r="44" fill="none" stroke={C.magenta} strokeWidth="1.4" opacity="0.5"/>
+        <circle cx="50" cy="50" r="40" fill="none" stroke={C.magenta} strokeWidth="0.6" opacity="0.5"/>
+        {/* circular text — top arc */}
+        <defs>
+          <path id="seal-top" d="M 12 50 A 38 38 0 0 1 88 50" fill="none"/>
+          <path id="seal-bot" d="M 12 50 A 38 38 0 0 0 88 50" fill="none"/>
+        </defs>
+        <text fontSize="5" fontFamily='"JetBrains Mono", monospace' fontWeight="700" fill={C.magenta} letterSpacing="2">
+          <textPath href="#seal-top" startOffset="50%" textAnchor="middle">★ FEDERAL DENIAL SERVICE ★</textPath>
+        </text>
+        <text fontSize="4" fontFamily='"JetBrains Mono", monospace' fontWeight="700" fill={C.magenta} letterSpacing="3">
+          <textPath href="#seal-bot" startOffset="50%" textAnchor="middle">EST. WHENEVER · NO. 0451</textPath>
+        </text>
+        <Stamp rotate={-6} scale={0.85}/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// ─── Variant H — Final pick (recommended) ───────────────────
+// Polished version: deep purple bg, faint scanlines, magenta stamp with
+// subtle glow + grunge speckle, and a small cyan accent line.
+function VarFinal() {
+  const dots = speckle(7, 90);
+  return (
+    <IconShell bg={C.bg}>
+      {/* radial glow */}
+      <div style={{ position: 'absolute', inset: 0,
+        background: `radial-gradient(circle at 50% 55%, ${C.magenta}26, transparent 60%)` }}/>
+      {/* scanlines */}
+      <div style={{ position: 'absolute', inset: 0,
+        backgroundImage: 'repeating-linear-gradient(0deg, transparent 0 4px, rgba(255,255,255,0.035) 4px 5px)' }}/>
+      <svg width="100%" height="100%" viewBox="0 0 100 100" style={{ position: 'absolute', inset: 0 }}>
+        {/* grunge speckle */}
+        {dots.map((d, i) => <circle key={i} cx={d.cx} cy={d.cy} r={d.r * 0.6} fill={C.white} opacity={d.o * 0.18}/>)}
+        {/* tiny cyan registration crosshairs */}
+        <g stroke={C.cyan} strokeWidth="0.5" opacity="0.5">
+          <path d="M8 8 L12 8 M10 6 L10 10"/>
+          <path d="M88 92 L92 92 M90 90 L90 94"/>
+        </g>
+        <Stamp rotate={-7} bottomLine="// RKN ⨯ PNH"/>
+      </svg>
+    </IconShell>
+  );
+}
+
+// Mockup: the icon on a phone homescreen grid alongside other icons
+function HomeScreenMock({ Icon }) {
+  const fakeIcons = [
+    { bg: 'linear-gradient(135deg,#3a8dff,#6e6cff)', l: 'M' },
+    { bg: 'linear-gradient(135deg,#1ed760,#0e8c3a)', l: '♪' },
+    { bg: 'linear-gradient(135deg,#ff7a59,#ff4081)', l: '◐' },
+    { bg: 'linear-gradient(135deg,#222,#444)', l: '✉' },
+    { bg: 'linear-gradient(135deg,#ffb300,#ff6f00)', l: '☀' },
+    { bg: 'linear-gradient(135deg,#7c4dff,#3d5afe)', l: '♦' },
+    { bg: 'linear-gradient(135deg,#26c6da,#0097a7)', l: '☁' },
+  ];
+  const Icons = [];
+  for (let i = 0; i < 7; i++) Icons.push(fakeIcons[i % fakeIcons.length]);
+  return (
+    <div style={{ width: '100%', height: '100%', background: 'linear-gradient(180deg, #1a2540 0%, #2d1a3a 100%)',
+      padding: 32, boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 24, alignContent: 'flex-start' }}>
+        {/* Our icon, in slot 1 */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+          <div style={{ width: 64, height: 64, transform: 'scale(0.291)', transformOrigin: 'top left',
+            position: 'relative' }}>
+            <div style={{ position: 'absolute', top: 0, left: 0 }}>{Icon ? <Icon/> : <VarFinal/>}</div>
+          </div>
+          <div style={{ color: '#fff', fontSize: 11, fontWeight: 500 }}>rknpnh</div>
+        </div>
+        {Icons.map((ic, i) => (
+          <div key={i} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+            <div style={{ width: 64, height: 64, borderRadius: 14, background: ic.bg,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: '#fff', fontSize: 28, fontWeight: 700,
+              boxShadow: '0 2px 6px rgba(0,0,0,0.25)' }}>{ic.l}</div>
+            <div style={{ color: '#fff', fontSize: 11, opacity: 0.85 }}>App</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Size sweep — the chosen icon at multiple sizes (verifies legibility)
+function SizeSweep({ Icon = VarFinal }) {
+  const sizes = [180, 120, 80, 56, 40];
+  return (
+    <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 22, background: '#1a1428' }}>
+      {sizes.map(s => (
+        <div key={s} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: s, height: s, position: 'relative' }}>
+            <div style={{ position: 'absolute', top: 0, left: 0, transform: `scale(${s/220})`, transformOrigin: 'top left' }}>
+              <Icon/>
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: '#9b8bbf', fontFamily: 'JetBrains Mono, monospace' }}>{s}px</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <DesignCanvas>
+      <DCSection id="hero" title="RKNPNH · App Icon" subtitle="Refining the NOT APPROVED stamp into a shippable app icon. 8 variants, then a final pick + size sweep + homescreen mock.">
+        <DCArtboard id="brief" label="What we're after" width={420} height={300}>
+          <div style={{ padding: 26, background: C.bgDeep, color: C.white, height: '100%', boxSizing: 'border-box',
+            fontFamily: 'Space Grotesk, sans-serif' }}>
+            <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: 4, color: C.cyan, marginBottom: 10 }}>// THE GOAL</div>
+            <div style={{ fontSize: 17, fontWeight: 700, lineHeight: 1.3, marginBottom: 14 }}>
+              A rubber-stamp app icon — &ldquo;RKN&rdquo; / &ldquo;PNH&rdquo; stacked, with NOT APPROVED. Recognizable at 40px.
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.55, color: '#b8a8d8' }}>
+              Mock-bureaucratic energy. Heavy black sans, slightly rotated, magenta on dark. Should feel like a denial stamp, not a notification.
+            </div>
+          </div>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="variants" title="Variants" subtitle="Same idea, different treatments. Best one wins.">
+        <DCArtboard id="a" label="A · Classic stamp"      width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarA/></DCArtboard>
+        <DCArtboard id="b" label="B · Scanlines + glow"   width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarB/></DCArtboard>
+        <DCArtboard id="c" label="C · RGB-split"          width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarC/></DCArtboard>
+        <DCArtboard id="d" label="D · Caution yellow"     width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarD/></DCArtboard>
+        <DCArtboard id="e" label="E · Heavier"            width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarE/></DCArtboard>
+        <DCArtboard id="f" label="F · Inverted"           width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarF/></DCArtboard>
+        <DCArtboard id="g" label="G · Federal seal"       width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}><VarG/></DCArtboard>
+      </DCSection>
+
+      <DCSection id="final" title="Recommended" subtitle="My pick. Polished, scales down well, hits the joke immediately.">
+        <DCArtboard id="big" label="Final · 220" width={220} height={220} style={{ borderRadius:0, background:'transparent', boxShadow:'none' }}>
+          <VarFinal/>
+        </DCArtboard>
+        <DCArtboard id="sweep" label="Size sweep — does it survive at 40px?" width={760} height={220} style={{ borderRadius:0, padding:0 }}>
+          <SizeSweep Icon={VarFinal}/>
+        </DCArtboard>
+        <DCArtboard id="home" label="iOS-ish homescreen mock" width={360} height={620} style={{ borderRadius:36, padding:0 }}>
+          <HomeScreenMock Icon={VarFinal}/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="handoff" title="For Claude Code" subtitle="The icon is plain SVG — easy to drop into your iOS / Android / Electron app. Spec below.">
+        <DCArtboard id="spec" label="Spec sheet" width={520} height={520}>
+          <div style={{ padding: 28, background: C.bgDeep, color: C.white, height: '100%', boxSizing: 'border-box',
+            fontFamily: 'JetBrains Mono, monospace', fontSize: 12, lineHeight: 1.7, overflow: 'auto' }}>
+            <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 18, fontWeight: 700, marginBottom: 16, color: C.magenta }}>icon.svg — spec</div>
+            <Spec k="canvas"     v="1024 × 1024 (export 1x/2x/3x)"/>
+            <Spec k="bg"         v="#120a1f (deep purple) — solid"/>
+            <Spec k="radius"     v="iOS: system mask · Android: adaptive (108dp w/ 72dp safe zone)"/>
+            <Spec k="stamp.fill" v="none"/>
+            <Spec k="stamp.stroke" v="#ff2bd6 · 22px @ 1024"/>
+            <Spec k="stamp.rotate" v="-7°"/>
+            <Spec k="text.main"  v="Archivo Black · RKN / PNH (2 lines) · #ff2bd6"/>
+            <Spec k="text.sub"   v="Space Grotesk 700 · ★ NOT APPROVED ★"/>
+            <Spec k="text.top"   v="JetBrains Mono 700 · // RKN ⨯ PNH (opt.)"/>
+            <Spec k="effects"    v="radial glow, 3% scanlines, 18% speckle"/>
+            <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px dashed ${C.purple}`,
+              fontFamily: 'Space Grotesk', fontSize: 12, color: '#b8a8d8', lineHeight: 1.5 }}>
+              Tip: for Android adaptive, render the stamp on a separate foreground layer so the system parallax works on the dark bg.
+            </div>
+          </div>
+        </DCArtboard>
+        <DCArtboard id="export" label="SVG export" width={420} height={520}>
+          <div style={{ padding: 24, background: '#1a1428', color: C.white, height: '100%', boxSizing: 'border-box',
+            fontFamily: 'JetBrains Mono, monospace', fontSize: 10, lineHeight: 1.6, overflow: 'auto', whiteSpace: 'pre' }}>
+{`<svg xmlns="http://www.w3.org/2000/svg"
+  viewBox="0 0 1024 1024">
+  <!-- background -->
+  <rect width="1024" height="1024"
+        fill="#120a1f"/>
+  <!-- radial glow -->
+  <radialGradient id="glow"
+        cx="0.5" cy="0.55" r="0.5">
+    <stop offset="0"
+        stop-color="#ff2bd6"
+        stop-opacity="0.15"/>
+    <stop offset="1"
+        stop-color="#ff2bd6"
+        stop-opacity="0"/>
+  </radialGradient>
+  <rect width="1024" height="1024"
+        fill="url(#glow)"/>
+
+  <!-- stamp, rotated -7° -->
+  <g transform="
+        translate(512 512)
+        rotate(-7)
+        translate(-340 -300)">
+    <rect width="680" height="600"
+          rx="32" fill="none"
+          stroke="#ff2bd6"
+          stroke-width="22"/>
+    <text x="340" y="252"
+          text-anchor="middle"
+          font-family="Archivo Black"
+          font-size="200"
+          fill="#ff2bd6"
+          letter-spacing="8">
+      RKN
+    </text>
+    <text x="340" y="432"
+          text-anchor="middle"
+          font-family="Archivo Black"
+          font-size="200"
+          fill="#ff2bd6"
+          letter-spacing="8">
+      PNH
+    </text>
+    <text x="340" y="520"
+          text-anchor="middle"
+          font-family="Space Grotesk"
+          font-weight="700"
+          font-size="36"
+          fill="#ff2bd6"
+          letter-spacing="14">
+      ★ NOT APPROVED ★
+    </text>
+  </g>
+</svg>`}
+          </div>
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+function Spec({ k, v }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: 12, marginBottom: 4 }}>
+      <span style={{ color: C.cyan, opacity: 0.85 }}>{k}</span>
+      <span style={{ color: C.white }}>{v}</span>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

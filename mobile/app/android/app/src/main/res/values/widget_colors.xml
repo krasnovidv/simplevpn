@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Liquid-chrome tokens for the home-screen widgets (see lib/theme/chrome.dart). -->
+<resources>
+    <color name="w_card">#F6F7FC</color>
+    <color name="w_text">#121320</color>
+    <color name="w_sub">#5A6082</color>
+    <color name="w_line">#14121320</color>
+    <color name="w_on_accent">#121320</color>
+    <color name="w_grad1">#7FE3FF</color>
+    <color name="w_grad2">#B79BFF</color>
+    <color name="w_grad3">#FF9BDB</color>
+    <color name="w_grad4">#FFE58A</color>
+</resources>
